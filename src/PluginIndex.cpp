@@ -104,7 +104,7 @@ namespace MPL::PluginIndex
             if (a_header.dataSize > kMaxStoredRecordSize)
             {
                 logger::warn(
-                    "[Window Sync] Plugin index rejected a {} byte record because it exceeds the {} byte stored-data limit",
+                "[Window Sync] index record rejected | size={}B | limit={}B",
                     a_header.dataSize,
                     kMaxStoredRecordSize);
                 return std::nullopt;
@@ -137,7 +137,7 @@ namespace MPL::PluginIndex
                     kMaxDecompressedRecordSize)
             {
                 logger::warn(
-                    "[Window Sync] Plugin index rejected a {} byte decompressed record because it exceeds the supported allocation range",
+                "[Window Sync] index decompressed record rejected | size={}B | allocation range exceeded",
                     decompressedSize);
                 return std::nullopt;
             }
@@ -171,7 +171,7 @@ namespace MPL::PluginIndex
             if (a_header.dataSize > kMaxStoredRecordSize)
             {
                 logger::warn(
-                    "[Window Sync] Plugin index rejected a {} byte record because it exceeds the {} byte stored-data limit",
+                "[Window Sync] index record rejected | size={}B | limit={}B",
                     a_header.dataSize,
                     kMaxStoredRecordSize);
                 return {};
@@ -477,7 +477,7 @@ namespace MPL::PluginIndex
                                     kMaxPlacementsPerPlugin)
                             {
                                 logger::warn(
-                                    "[Window Sync] Plugin index stopped after {} unique placements in '{}'",
+                "[Window Sync] index stopped | placements={} | plugin='{}'",
                                     kMaxPlacementsPerPlugin,
                                     file.GetFilename());
                                 return Fail(
@@ -652,7 +652,7 @@ namespace MPL::PluginIndex
                     if (!parser.Parse(path))
                     {
                         logger::warn(
-                            "[Window Sync] Static EditorID preflight could not parse '{}' from '{}': {}",
+                    "[Window Sync] EditorID preflight parse failed | plugin='{}' | path='{}' | {}",
                             plugin->GetFilename(),
                             path.string(),
                             parser.FailureReason());
@@ -669,7 +669,7 @@ namespace MPL::PluginIndex
                 catch (const std::exception& error)
                 {
                     logger::error(
-                        "[Window Sync] Static EditorID preflight failed while parsing '{}' from '{}': {}",
+                    "[Window Sync] EditorID preflight failed | plugin='{}' | path='{}' | {}",
                         plugin->GetFilename(),
                         path.string(),
                         error.what());
@@ -678,12 +678,11 @@ namespace MPL::PluginIndex
             }
             if (!result.failedPlugins.empty())
             {
-                logger::warn(
-                    "[Window Sync] Plugin index stopped because the Static EditorID preflight was incomplete");
+            logger::warn("[Window Sync] index stopped | EditorID preflight incomplete");
                 return result;
             }
             logger::info(
-                "[Window Sync] Static EditorID preflight completed: plugins={}, EditorIDs={}",
+                "[Window Sync] EditorID preflight | plugins={} | EditorIDs={}",
                 plugins.size(),
                 result.editorIDs.size());
             parseOptions.indexStaticEditorIDs = false;
@@ -710,8 +709,7 @@ namespace MPL::PluginIndex
                 if (!parser.Parse(path))
                 {
                     logger::warn(
-                        "[Window Sync] Plugin index could not parse '{}' from '{}': {}; "
-                        "runtime reference handling remains available",
+                        "[Window Sync] index parse failed | plugin='{}' | path='{}' | {} | runtimeReferences=true",
                         plugin->GetFilename(),
                         path.string(),
                         parser.FailureReason());
@@ -743,7 +741,7 @@ namespace MPL::PluginIndex
                 if (totalLimitReached)
                 {
                     logger::error(
-                        "[Window Sync] Plugin index reached the {} placement session limit while merging '{}' from '{}'; runtime reference handling remains available",
+                        "[Window Sync] index placement limit={} | plugin='{}' | path='{}' | runtimeReferences=true",
                         kMaxTotalPlacements,
                         plugin->GetFilename(),
                         path.string());
@@ -771,7 +769,7 @@ namespace MPL::PluginIndex
             catch (const std::bad_alloc&)
             {
                 logger::error(
-                    "[Window Sync] Plugin index exhausted its allocation budget while parsing '{}' from '{}'; runtime reference handling remains available",
+                    "[Window Sync] index allocation exhausted | plugin='{}' | path='{}' | runtimeReferences=true",
                     plugin->GetFilename(),
                     path.string());
                 recordFailure(*plugin);
@@ -779,7 +777,7 @@ namespace MPL::PluginIndex
             catch (const std::length_error& error)
             {
                 logger::error(
-                    "[Window Sync] Plugin index rejected an oversized allocation while parsing '{}' from '{}': {}",
+                    "[Window Sync] index allocation rejected | plugin='{}' | path='{}' | {}",
                     plugin->GetFilename(),
                     path.string(),
                     error.what());
@@ -788,7 +786,7 @@ namespace MPL::PluginIndex
             catch (const std::exception& error)
             {
                 logger::error(
-                    "[Window Sync] Plugin index failed while parsing '{}' from '{}': {}",
+                    "[Window Sync] index failed | plugin='{}' | path='{}' | {}",
                     plugin->GetFilename(),
                     path.string(),
                     error.what());
@@ -824,18 +822,18 @@ namespace MPL::PluginIndex
                 failures.append(plugin);
             }
             logger::warn(
-                "[Window Sync] Plugin index is partial; failed plugin(s): {}",
+                "[Window Sync] index partial | failedPlugins={}",
                 failures);
         }
         logger::info(
-            "[Window Sync] Plugin index completed: plugins={}/{}, references parsed={}, placement records discarded={}, placements retained={}, compressed references={}, minimally scanned references={}, reference payload bypassed={} bytes, exterior cell groups skipped={}, excluded cell groups skipped={}, cell-group data skipped={} bytes",
+            "[Window Sync] index | plugins={}/{} | references={} | retained={} | discarded={} | minimal={} | compressed={} | payloadBypassed={}B | exteriorGroups={} | excludedGroups={} | cellDataBypassed={}B",
             result.pluginsParsed,
             result.pluginsDiscovered,
             result.referencesRead,
-            result.placementRecordsDiscarded,
             result.placements.size(),
-            result.compressedReferences,
+            result.placementRecordsDiscarded,
             result.minimallyScannedReferences,
+            result.compressedReferences,
             result.referencePayloadBytesSkipped,
             result.exteriorCellGroupsSkipped,
             result.excludedCellGroupsSkipped,

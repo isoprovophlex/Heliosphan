@@ -11,7 +11,7 @@ namespace RE
 
 namespace MPL::HeliosphanAPI
 {
-    inline constexpr std::uint32_t kVersion = 4;
+    inline constexpr std::uint32_t kVersion = 6;
 
     struct ReferenceCallbacks
     {
@@ -80,6 +80,10 @@ namespace MPL::HeliosphanAPI
         bool (*RequestLightPlacerReload)() = nullptr;
         bool (*RegisterReferenceClient)(
             const ReferenceCallbacks*) = nullptr;
+        bool (*GetAutoCSTonemapping)(const char*) = nullptr;
+        bool (*SetAutoCSTonemapping)(const char*, bool) = nullptr;
+        bool (*IsAutoCSTonemappingApplied)(const char*) = nullptr;
+        bool (*SetAutoCSTonemappingSuppressed)(const char*, bool) = nullptr;
     };
 
     constexpr bool HasFlag(

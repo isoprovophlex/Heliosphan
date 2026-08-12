@@ -241,7 +241,7 @@ namespace MPL::LightPlacer
                 if (!WriteFileAtomically(originalPath, originalContent))
                 {
                     logger::error(
-                        "{} could not recover '{}' from '{}'",
+                    "{} recovery failed | target='{}' | source='{}'",
                         kLogPrefix,
                         originalPath.string(),
                         entry.path().string());
@@ -252,7 +252,7 @@ namespace MPL::LightPlacer
                 if (removeError)
                 {
                     logger::warn(
-                        "{} recovered '{}' but could not remove '{}': {}",
+                    "{} recovery cleanup failed | target='{}' | journal='{}' | {}",
                         kLogPrefix,
                         originalPath.string(),
                         entry.path().string(),
@@ -264,7 +264,7 @@ namespace MPL::LightPlacer
             {
                 configurationFilesComplete = false;
                 logger::error(
-                    "{} stopped checking recovery files: {}",
+                    "{} recovery scan stopped | {}",
                     kLogPrefix,
                     error.message());
             }
@@ -309,7 +309,7 @@ namespace MPL::LightPlacer
             {
                 configurationFilesComplete = false;
                 logger::error(
-                    "{} stopped reading configuration files: {}",
+                    "{} configuration scan stopped | {}",
                     kLogPrefix,
                     error.message());
             }
@@ -786,7 +786,7 @@ namespace MPL::LightPlacer
                 catch (const std::exception& error)
                 {
                     logger::error(
-                        "{} transformer '{}' raised an exception for '{}': {}",
+                    "{} transformer={} failed | file='{}' | {}",
                         kLogPrefix,
                         transformer.id,
                         path,
@@ -795,7 +795,7 @@ namespace MPL::LightPlacer
                 catch (...)
                 {
                     logger::error(
-                        "{} transformer '{}' raised an unknown exception for '{}'",
+                    "{} transformer={} failed | file='{}' | unknown exception",
                         kLogPrefix,
                         transformer.id,
                         path);
@@ -804,7 +804,7 @@ namespace MPL::LightPlacer
                 {
                     ++a_stats.transformerFailures;
                     logger::error(
-                        "{} transformer '{}' failed for '{}'; its changes were ignored",
+                    "{} transformer={} failed | file='{}' | changes ignored",
                         kLogPrefix,
                         transformer.id,
                         path);
@@ -820,7 +820,7 @@ namespace MPL::LightPlacer
                 {
                     ++a_stats.transformerFailures;
                     logger::error(
-                        "{} transformer '{}' returned invalid Light Placer JSON for '{}'; its changes were ignored",
+                    "{} transformer={} invalid JSON | file='{}' | changes ignored",
                         kLogPrefix,
                         transformer.id,
                         path);
@@ -846,9 +846,6 @@ namespace MPL::LightPlacer
             const auto files = configurationFiles;
             if (!files || files->empty())
             {
-                logger::info(
-                    "{} skipped because Data\\LightPlacer has no JSON configuration files",
-                    kLogPrefix);
                 return;
             }
 
@@ -864,7 +861,7 @@ namespace MPL::LightPlacer
                 {
                     ++a_stats.fileFailures;
                     logger::warn(
-                        "{} skipped '{}' because it changed after the startup snapshot",
+                "{} file='{}' skipped | changed after snapshot",
                         kLogPrefix,
                         file.path.string());
                     continue;
@@ -879,7 +876,7 @@ namespace MPL::LightPlacer
                     if (document.is_discarded() || !document.is_array())
                     {
                         logger::warn(
-                            "{} could not parse '{}'; leaving its selective partition unchanged",
+                "{} parse failed | file='{}' | partition unchanged",
                             kLogPrefix,
                             file.path.string());
                     }
@@ -918,7 +915,7 @@ namespace MPL::LightPlacer
                 {
                     ++a_stats.fileFailures;
                     logger::error(
-                        "{} could not create recovery journal '{}'",
+                "{} recovery journal create failed | file='{}'",
                         kLogPrefix,
                         recovery.string());
                     continue;
@@ -932,7 +929,7 @@ namespace MPL::LightPlacer
                 {
                     ++a_stats.fileFailures;
                     logger::error(
-                        "{} could not write '{}'",
+                    "{} temporary write failed | file='{}'",
                         kLogPrefix,
                         path);
                     std::error_code ignored;
@@ -952,7 +949,7 @@ namespace MPL::LightPlacer
                 {
                     restored = false;
                     logger::error(
-                        "{} could not restore '{}'",
+                    "{} restore failed | file='{}'",
                         kLogPrefix,
                         path);
                     continue;
@@ -964,7 +961,7 @@ namespace MPL::LightPlacer
                 {
                     restored = false;
                     logger::warn(
-                        "{} restored '{}' but could not remove recovery journal '{}': {}",
+                    "{} recovery cleanup failed | target='{}' | journal='{}' | {}",
                         kLogPrefix,
                         path,
                         recovery.string(),
@@ -988,7 +985,7 @@ namespace MPL::LightPlacer
             if (!command)
             {
                 logger::error(
-                    "{} could not find the ReloadLP or lpreload console command",
+                "{} reload failed | command unavailable",
                     kLogPrefix);
                 return false;
             }
@@ -1018,7 +1015,7 @@ namespace MPL::LightPlacer
                     catch (const std::exception& error)
                     {
                         logger::error(
-                            "{} transformer '{}' raised an exception during reload completion: {}",
+                    "{} transformer={} completion failed | {}",
                             kLogPrefix,
                             transformer.id,
                             error.what());
@@ -1026,7 +1023,7 @@ namespace MPL::LightPlacer
                     catch (...)
                     {
                         logger::error(
-                            "{} transformer '{}' raised an unknown exception during reload completion",
+                    "{} transformer={} completion failed | unknown exception",
                             kLogPrefix,
                             transformer.id);
                     }
@@ -1038,6 +1035,12 @@ namespace MPL::LightPlacer
             const std::vector<PatchRule>& a_rules,
             const std::vector<RegisteredTransformer>& a_transformers)
         {
+            InitializeConfigurationFiles();
+            if (!configurationFiles || configurationFiles->empty())
+            {
+                NotifyReloadComplete(a_transformers, true);
+                return;
+            }
             PatchStats stats;
             std::unordered_map<std::string, std::string> backups;
             bool succeeded = false;
@@ -1052,10 +1055,13 @@ namespace MPL::LightPlacer
                 {
                     succeeded = stats.transformerFailures == 0 &&
                                 stats.fileFailures == 0;
-                    logger::info(
-                        "{} scanned {} file(s); no eligible definitions required partitioning or tuning",
-                        kLogPrefix,
-                        stats.filesScanned);
+                    if (stats.filesScanned != 0)
+                    {
+                        logger::info(
+                            "{} scan | files={} | eligible=0",
+                            kLogPrefix,
+                            stats.filesScanned);
+                    }
                     NotifyReloadComplete(a_transformers, succeeded);
                     return;
                 }
@@ -1067,10 +1073,7 @@ namespace MPL::LightPlacer
                             stats.transformerFailures == 0 &&
                             stats.fileFailures == 0;
                 logger::info(
-                    "{} combined patch: files={}/{}, transformed files={}, definitions={}, "
-                    "reference targets={}, whitelist fallback sources={}, "
-                    "malformed filtered definitions skipped={}, "
-                    "transformer failures={}, ReloadLP={}, originals restored",
+                    "{} patch | files={}/{} | transformed={} | definitions={} | references={} | whitelistFallbacks={} | malformed={} | transformerFailures={} | reload={} | restored={}",
                     kLogPrefix,
                     stats.filesPatched,
                     stats.filesScanned,
@@ -1080,13 +1083,14 @@ namespace MPL::LightPlacer
                     stats.whitelistFallbackSources,
                     stats.lightEntriesSkippedForMalformedFilters,
                     stats.transformerFailures,
-                    reloaded);
+                    reloaded,
+                    restored);
             }
             catch (const std::exception& error)
             {
                 RestoreConfigs(backups);
                 logger::error(
-                    "{} broker operation failed and restored {} temporary file(s): {}",
+                "{} broker failed | restored={} | {}",
                     kLogPrefix,
                     backups.size(),
                     error.what());
@@ -1095,7 +1099,7 @@ namespace MPL::LightPlacer
             {
                 RestoreConfigs(backups);
                 logger::error(
-                    "{} broker operation failed with an unknown exception and restored {} temporary file(s)",
+                "{} broker failed | restored={} | unknown exception",
                     kLogPrefix,
                     backups.size());
             }
@@ -1126,7 +1130,7 @@ namespace MPL::LightPlacer
             else
             {
                 logger::error(
-                    "{} could not queue because the SKSE task interface is unavailable",
+                "{} queue failed | SKSE task interface unavailable",
                     kLogPrefix);
             }
         }
@@ -1286,12 +1290,15 @@ namespace MPL::LightPlacer
                 configurationFiles =
                     std::make_shared<const std::vector<ConfigurationFile>>(
                         std::move(files));
-                logger::info(
-                    "{} configuration snapshot prepared: files={}, malformed files={}, recovered transactions={}",
-                    kLogPrefix,
-                    configurationFiles->size(),
-                    malformed,
-                    recovered);
+                if (!configurationFiles->empty() || malformed != 0 || recovered != 0)
+                {
+                    logger::info(
+                        "{} snapshot | files={} | malformed={} | recovered={}",
+                        kLogPrefix,
+                        configurationFiles->size(),
+                        malformed,
+                        recovered);
+                }
             });
     }
 
@@ -1451,16 +1458,19 @@ namespace MPL::LightPlacer
             }
         }
         placementFilterPrepared = true;
-        logger::info(
-            "{} placement filter prepared: files={}, malformed files={}, source forms={}, source models={}, watched bases={}, watched references={}, complete={}",
-            kLogPrefix,
-            filesScanned,
-            malformedFiles,
-            sourceFormCount,
-            modelSources.size(),
-            watchedBases.size(),
-            watchedReferences.size(),
-            placementFilterComplete);
+        if (filesScanned != 0 || malformedFiles != 0)
+        {
+            logger::info(
+                "{} filter | files={} | malformed={} | forms={} | models={} | bases={} | references={} | complete={}",
+                kLogPrefix,
+                filesScanned,
+                malformedFiles,
+                sourceFormCount,
+                modelSources.size(),
+                watchedBases.size(),
+                watchedReferences.size(),
+                placementFilterComplete);
+        }
     }
 
     bool NeedsPlacement(
@@ -1539,7 +1549,7 @@ namespace MPL::LightPlacer
             if (!FormResolver::Resolve(profile.settings.externalEmittance))
             {
                 logger::error(
-                    "{} [{}] external emittance '{}' could not be resolved; the profile was skipped",
+                    "{} {} | emittance={} unresolved | profile skipped",
                     kLogPrefix,
                     profile.id,
                     profile.settings.externalEmittance);
@@ -1651,7 +1661,7 @@ namespace MPL::LightPlacer
             return;
         }
         logger::info(
-            "{} queued a combined reload with {} selective rule(s)",
+            "{} reload | status=queued | rules={}",
             kLogPrefix,
             ruleCount);
         QueueReload();
@@ -1702,7 +1712,7 @@ namespace MPL::LightPlacer
                     return true;
                 }
                 logger::error(
-                    "{} rejected duplicate transformer ID '{}'",
+                    "{} transformer={} rejected | duplicate ID",
                     kLogPrefix,
                     value.id);
                 return false;
@@ -1712,7 +1722,7 @@ namespace MPL::LightPlacer
         catch (const std::exception& error)
         {
             logger::error(
-                "{} could not register transformer '{}': {}",
+                "{} transformer={} registration failed | {}",
                 kLogPrefix,
                 a_transformer->id,
                 error.what());
@@ -1721,13 +1731,13 @@ namespace MPL::LightPlacer
         catch (...)
         {
             logger::error(
-                "{} could not register transformer '{}' because an unknown exception occurred",
+                "{} transformer={} registration failed | unknown exception",
                 kLogPrefix,
                 a_transformer->id);
             return false;
         }
         logger::info(
-            "{} registered transformer '{}'",
+            "{} transformer={} | status=registered",
             kLogPrefix,
             value.id);
         return true;
@@ -1756,14 +1766,14 @@ namespace MPL::LightPlacer
         catch (const std::exception& error)
         {
             logger::error(
-                "{} reload request failed: {}",
+                "{} reload request failed | {}",
                 kLogPrefix,
                 error.what());
         }
         catch (...)
         {
             logger::error(
-                "{} reload request failed with an unknown exception",
+                "{} reload request failed | unknown exception",
                 kLogPrefix);
         }
         return false;

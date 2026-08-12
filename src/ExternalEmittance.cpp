@@ -45,6 +45,12 @@ namespace MPL::ExternalEmittance
             void (*OnReferenceEmittanceChanged)(RE::TESObjectREFR*) = nullptr;
         };
 
+        struct CellRefreshDiagnostics
+        {
+            RE::FormID cell = 0;
+            std::unordered_set<RE::FormID> lateReferencesLogged;
+        };
+
         struct State
         {
             std::vector<ConfiguredProfile> configuredProfiles;
@@ -55,6 +61,7 @@ namespace MPL::ExternalEmittance
             std::unordered_map<RE::FormID, Plan> runtimePlans;
             std::vector<RegisteredClient> clients;
             std::unordered_set<RE::FormID> emissiveLightReferences;
+            std::optional<CellRefreshDiagnostics> cellRefreshDiagnostics;
             bool gameLoadPending = false;
             bool placementFilterPrepared = false;
         };
@@ -111,7 +118,7 @@ namespace MPL::ExternalEmittance
                 changed += ApplyPlan(reference, plan) ? 1 : 0;
             }
             logger::info(
-                "[External Emittance] Final startup replay completed: planned={}, available={}, changed={}",
+                "[External Emittance] replay | planned={} | available={} | changed={}",
                 state.startupPlans.size(),
                 available,
                 changed);
@@ -132,7 +139,7 @@ namespace MPL::ExternalEmittance
                 ReferenceInitializationHook::thunk);
             referenceInitializationHookInstalled = true;
             logger::info(
-                "[External Emittance] Final reference-initialization hook installed");
+                "[External Emittance] hook=reference-initialization | status=installed");
         }
 
         void FinalizeReferenceInitialization()
@@ -176,14 +183,14 @@ namespace MPL::ExternalEmittance
             catch (const std::exception& error)
             {
                 logger::error(
-                    "[External Emittance] Client '{}' raised an exception: {}",
+                    "[External Emittance] client={} failed | {}",
                     a_client.id,
                     error.what());
             }
             catch (...)
             {
                 logger::error(
-                    "[External Emittance] Client '{}' raised an unknown exception",
+                    "[External Emittance] client={} failed | unknown exception",
                     a_client.id);
             }
         }
@@ -228,6 +235,69 @@ namespace MPL::ExternalEmittance
                 return std::addressof(found->second);
             }
             return nullptr;
+        }
+
+        bool DetailedLogsEnabled()
+        {
+            return std::ranges::any_of(
+                GetState().profiles,
+                [](const ResolvedProfile& a_profile)
+                {
+                    return a_profile.detailedLogging;
+                });
+        }
+
+        std::string_view ProfileID(const Plan* a_plan)
+        {
+            const auto& profiles = GetState().profiles;
+            return a_plan && a_plan->profile < profiles.size() ?
+                       std::string_view(profiles[a_plan->profile].profile) :
+                       std::string_view("<unplanned>");
+        }
+
+        void LogReferenceDiagnostic(
+            RE::TESObjectREFR* a_reference,
+            const Plan* a_plan)
+        {
+            if (!DetailedLogsEnabled() || !a_reference)
+            {
+                return;
+            }
+            const auto* base = a_reference->GetBaseObject();
+            const auto* emittance = a_reference->extraList.GetByType<
+                RE::ExtraEmittanceSource>();
+            const auto* source = emittance ? emittance->source : nullptr;
+            const auto* cell = a_reference->GetParentCell();
+            logger::info(
+                "[External Emittance] profile={} | cell={:08X} | reference={:08X} | base=[{:08X}] | XEMI=[{:08X}]",
+                ProfileID(a_plan),
+                cell ? cell->GetFormID() : 0,
+                a_reference->GetFormID(),
+                base ? base->GetFormID() : 0,
+                source ? source->GetFormID() : 0);
+        }
+
+        void LogLateReferenceDiagnostic(
+            RE::TESObjectREFR* a_reference,
+            const Plan* a_plan)
+        {
+            auto& state = GetState();
+            if (!a_reference || !a_plan ||
+                a_plan->profile >= state.profiles.size() ||
+                !state.profiles[a_plan->profile].detailedLogging ||
+                !state.cellRefreshDiagnostics)
+            {
+                return;
+            }
+            auto& diagnostics = *state.cellRefreshDiagnostics;
+            const auto* cell = a_reference->GetParentCell();
+            const auto referenceID = a_reference->GetFormID();
+            if (!cell || cell->GetFormID() != diagnostics.cell ||
+                !diagnostics.lateReferencesLogged.insert(referenceID).second)
+            {
+                return;
+            }
+            LogReferenceDiagnostic(a_reference, a_plan);
         }
 
         bool ApplyPlan(RE::TESObjectREFR* a_reference, const Plan& a_plan)
@@ -414,8 +484,7 @@ namespace MPL::ExternalEmittance
         auto* tasks = SKSE::GetTaskInterface();
         if (!tasks)
         {
-            logger::warn(
-                "[External Emittance] SKSE task interface is unavailable; finalizing reference initialization immediately");
+            logger::warn("[External Emittance] finalization=immediate | SKSE task interface unavailable");
             FinalizeReferenceInitialization();
             return;
         }
@@ -466,7 +535,7 @@ namespace MPL::ExternalEmittance
         }
         state.placementFilterPrepared = true;
         logger::info(
-            "[External Emittance] Placement filter prepared: watched bases={}",
+            "[External Emittance] filter | bases={}",
             state.watchedBases.size());
     }
 
@@ -485,7 +554,6 @@ namespace MPL::ExternalEmittance
     void Prepare(const PluginIndex::Result& a_index)
     {
         auto& state = GetState();
-        std::size_t configuredForms = 0;
         std::size_t missingForms = 0;
         std::size_t invalidForms = 0;
         for (const auto& configured : state.configuredProfiles)
@@ -499,13 +567,12 @@ namespace MPL::ExternalEmittance
             if (configured.filtered &&
                 !configured.settings.cellContainsTarget.empty())
             {
-                configuredForms += cellContainsForms.size();
                 const auto target = FormResolver::Resolve(
                     configured.settings.cellContainsTarget);
                 if (!target || !RE::TESForm::LookupByID(target))
                 {
                     logger::warn(
-                        "[External Emittance] [{}] cellContains emittance '{}' could not be resolved; matching-form emittance is disabled",
+                        "[External Emittance] {} cellContains | emittance={} unresolved | matchingForms=false",
                         configured.profile,
                         configured.settings.cellContainsTarget);
                 }
@@ -535,12 +602,11 @@ namespace MPL::ExternalEmittance
             {
                 continue;
             }
-            configuredForms += configured.settings.forms.size();
             const auto target = FormResolver::Resolve(configured.settings.target);
             if (!target || !RE::TESForm::LookupByID(target))
             {
                 logger::warn(
-                    "[External Emittance] [{}] emittancePatching target '{}' could not be resolved; additional-form emittance is disabled",
+                        "[External Emittance] {} emittancePatching | target={} unresolved | additionalForms=false",
                     configured.profile,
                     configured.settings.target);
                 continue;
@@ -567,7 +633,7 @@ namespace MPL::ExternalEmittance
                     if (configured.detailedLogging)
                     {
                         logger::warn(
-                            "[External Emittance] [{}] Source '{}' [{:08X}] is not a STAT, MSTT, or LIGH form",
+                            "[External Emittance] {} | source={} [{:08X}] | type=invalid",
                             configured.profile,
                             selector,
                             formID);
@@ -594,9 +660,8 @@ namespace MPL::ExternalEmittance
         if (state.profiles.empty())
         {
             logger::info(
-                "[External Emittance] Startup preparation completed: profiles={}, configured forms={}, resolved forms=0, direct references=0, optional sources unavailable={}, invalid sources={}, reference plans=0, references changed=0",
+                "[External Emittance] prepare | profiles={} | forms=0 resolved/{} missing/{} invalid | references=0 | plans=0 | changed=0",
                 state.configuredProfiles.size(),
-                configuredForms,
                 missingForms,
                 invalidForms);
             return;
@@ -633,13 +698,12 @@ namespace MPL::ExternalEmittance
             }
         }
         logger::info(
-            "[External Emittance] Startup preparation completed: profiles={}, configured forms={}, resolved forms={}, direct references={}, optional sources unavailable={}, invalid sources={}, reference plans={}, references changed={}",
+            "[External Emittance] prepare | profiles={} | forms={} resolved/{} missing/{} invalid | references={} | plans={} | changed={}",
             state.configuredProfiles.size(),
-            configuredForms,
             resolvedForms,
-            resolvedReferences,
             missingForms,
             invalidForms,
+            resolvedReferences,
             state.startupPlans.size(),
             changed);
     }
@@ -688,6 +752,7 @@ namespace MPL::ExternalEmittance
         if (plan)
         {
             ApplyPlan(a_reference, *plan);
+            LogLateReferenceDiagnostic(a_reference, plan);
         }
     }
 
@@ -701,6 +766,7 @@ namespace MPL::ExternalEmittance
         state.gameLoadPending = true;
         state.runtimePlans.clear();
         state.emissiveLightReferences.clear();
+        state.cellRefreshDiagnostics.reset();
     }
 
     void ReplayCell(RE::TESObjectCELL* a_cell)
@@ -729,6 +795,16 @@ namespace MPL::ExternalEmittance
         }
 
         const auto clients = state.clients;
+        if (DetailedLogsEnabled())
+        {
+            state.cellRefreshDiagnostics = CellRefreshDiagnostics{
+                .cell = a_cell->GetFormID(),
+            };
+        }
+        else
+        {
+            state.cellRefreshDiagnostics.reset();
+        }
         std::size_t notified = 0;
         for (const auto& entry : loadedData->emittanceLightRefMap)
         {
@@ -748,6 +824,12 @@ namespace MPL::ExternalEmittance
 
             state.emissiveLightReferences.insert(
                 reference->GetFormID());
+            if (state.cellRefreshDiagnostics)
+            {
+                LogReferenceDiagnostic(
+                    reference,
+                    FindPlan(reference->GetFormID()));
+            }
             for (const auto& client : clients)
             {
                 NotifyClient(client, reference);
@@ -799,7 +881,7 @@ namespace MPL::ExternalEmittance
             }
         }
         logger::info(
-            "[External Emittance] Registered reference client '{}' and replayed {} light reference(s)",
+            "[External Emittance] client={} | status=registered | replayed={}",
             client.id,
             replayed);
         return true;

@@ -252,6 +252,8 @@ namespace MPL::Heliosphan
             bool pendingDefaultWeatherNotification = false;
             bool gameLoadPending = false;
             std::uint32_t readinessPollAttempts = 0;
+            std::chrono::steady_clock::time_point readinessStarted;
+            std::string readinessLastIssue;
             std::uint64_t generation = 0;
             MPL::API::MMSF::Interface* mmsf = nullptr;
             SpeedTiming speedTiming;
@@ -317,7 +319,7 @@ namespace MPL::Heliosphan
             if (IsSpeedLoggingEnabled())
             {
                 logger::info(
-                    "[Cell Timing] cell={:08X} component=Heliosphan stage=finish last={} total={:.3f} ms",
+                    "[Cell Timing] cell={:08X} | component=Heliosphan | stage=finish | last={} | total={:.3f}ms",
                     timing.cell,
                     a_generation ? "weather" : "cell change",
                     ElapsedMilliseconds(timing.cellStarted));
@@ -380,8 +382,7 @@ namespace MPL::Heliosphan
                         true,
                         std::memory_order_acq_rel))
                 {
-                    logger::warn(
-                        "[Weather Sync] Could not queue a loaded-cell readiness event because the SKSE task interface is unavailable; polling remains active");
+                    logger::warn("[Weather Sync] readiness event queue failed | polling=true | SKSE task interface unavailable");
                 }
                 return RE::BSEventNotifyControl::kContinue;
             }
@@ -399,8 +400,7 @@ namespace MPL::Heliosphan
             auto* events = RE::ScriptEventSourceHolder::GetSingleton();
             if (!events)
             {
-                logger::warn(
-                    "[Weather Sync] Could not register the cell-fully-loaded readiness trigger; polling remains active");
+                logger::warn("[Weather Sync] readiness trigger registration failed | polling=true");
                 return;
             }
             events->AddEventSink(
@@ -620,7 +620,7 @@ namespace MPL::Heliosphan
                             static_cast<std::uint32_t>(fileIndex);
                         a_state.profileUsesPluginLoadOrder[index] = true;
                         logger::info(
-                            "[Heliosphan] [{}] Layer priority resolved from [Luma] plugin '{}' at load-order position {}",
+                            "[Heliosphan] {} priority | plugin={} | loadOrder={}",
                             settings.id,
                             filename,
                             fileIndex);
@@ -628,7 +628,7 @@ namespace MPL::Heliosphan
                     else
                     {
                         logger::warn(
-                            "[Heliosphan] [{}] Provider plugin '{}' is loaded but its description does not contain [Luma]; configuration discovery order will be used for layering",
+                            "[Heliosphan] {} priority | plugin={} | [Luma] missing | order=discovery",
                             settings.id,
                             filename);
                     }
@@ -688,17 +688,14 @@ namespace MPL::Heliosphan
             {
                 return "<none>";
             }
-            const auto editorID = GetEditorID(a_weather);
-            return editorID.empty() ?
-                       std::format("<no EditorID> [{:08X}]", a_weather->formID) :
-                       std::format("{} [{:08X}]", editorID, a_weather->formID);
+            return std::format("{:08X}", a_weather->formID);
         }
 
         std::string DescribeProfile(const std::optional<std::size_t> a_profile)
         {
             const auto& profiles = GetState().profiles;
             return a_profile && *a_profile < profiles.size() ?
-                       std::format("{} [{}]", profiles[*a_profile].id, *a_profile) :
+                       profiles[*a_profile].id :
                        "<none>";
         }
 
@@ -884,7 +881,7 @@ namespace MPL::Heliosphan
             {
                 const auto profile = *state.activeProfile;
                 ReleaseOwnedOverride();
-                LogProfile(state.profiles[profile], "Weather override released after its timer expired");
+                LogProfile(state.profiles[profile], "override released | reason=timer expired");
                 ShowNotification(state.profiles[profile], "Weather Override Released");
                 return;
             }
@@ -921,7 +918,7 @@ namespace MPL::Heliosphan
             const auto baseEditorID = BaseEditorID(state.pendingSource, sourceProfile);
             if (baseEditorID.empty())
             {
-                logger::warn("[Weather Sync] Could not resolve the source weather EditorID");
+                logger::warn("[Weather Sync] source weather EditorID unresolved");
                 if (reportProfile)
                 {
                     const auto& settings = state.profiles[*reportProfile];
@@ -955,13 +952,13 @@ namespace MPL::Heliosphan
                 if (reportProfile)
                 {
                     logger::warn(
-                        "[Weather Sync] [{}] Could not find paired weather {}",
+                        "[Weather Sync] {} | paired weather={} missing",
                         state.profiles[*reportProfile].id,
                         targetEditorID);
                 }
                 else
                 {
-                    logger::warn("[Weather Sync] Could not find paired weather {}", targetEditorID);
+                    logger::warn("[Weather Sync] paired weather={} missing", targetEditorID);
                 }
             }
 
@@ -1025,7 +1022,7 @@ namespace MPL::Heliosphan
                 else
                 {
                     logger::error(
-                        "[Weather Sync] [{}] Configured fallback weather '{}' is unavailable or does not belong to the expected profile",
+                        "[Weather Sync] {} fallback={} invalid | unavailable/profile mismatch",
                         settings.id,
                         fallbackEditorID);
                 }
@@ -1039,7 +1036,7 @@ namespace MPL::Heliosphan
                     const auto& settings = state.profiles[profile];
                     LogProfile(
                         settings,
-                        "Weather sync failed because no exact, region-selected, or fallback weather was available");
+                        "sync failed | exact/region/fallback weather unavailable");
                     if (showOverrideReleased)
                     {
                         ShowNotification(settings, "Weather Override Released");
@@ -1089,7 +1086,7 @@ namespace MPL::Heliosphan
             const auto result =
                 WeatherRuntime::SetWeatherInstant(target, entering);
             LogDetailed(
-                "Weather transition completed: generation={}, cell={}, profile={}, direction={}, source={}, target={}, selection={}, status={}, emittance lights={}",
+                "transition=complete | generation={} | cell={} | profile={} | direction={} | source={} | target={} | selection={} | status={} | lights={}",
                 a_generation,
                 destinationCell ?
                     std::format("{:08X}", destinationCell->formID) :
@@ -1202,6 +1199,43 @@ namespace MPL::Heliosphan
             return {};
         }
 
+        void RecordReadinessIssue(
+            State& a_state,
+            const std::string_view a_issue)
+        {
+            if (!a_issue.empty())
+            {
+                a_state.readinessLastIssue = a_issue;
+            }
+        }
+
+        void LogReadinessCompleted(
+            const State& a_state,
+            const std::uint64_t a_generation,
+            const RE::TESObjectCELL* a_cell,
+            const bool a_requireRegion,
+            const std::string_view a_phase)
+        {
+            const auto elapsed =
+                a_state.readinessStarted ==
+                        std::chrono::steady_clock::time_point{} ?
+                    0.0 :
+                    ElapsedMilliseconds(a_state.readinessStarted);
+            LogDetailed(
+                "readiness=complete | generation={} | phase={} | cell={} | attempts={} | elapsed={:.3f}ms | blocker={} | region={}",
+                a_generation,
+                a_phase,
+                a_cell ?
+                    std::format("{:08X}", a_cell->GetFormID()) :
+                    "<none>",
+                a_state.readinessPollAttempts,
+                elapsed,
+                a_state.readinessLastIssue.empty() ?
+                    "<none>" :
+                    a_state.readinessLastIssue,
+                a_requireRegion);
+        }
+
         void ProcessEngineReadyWork(
             const std::uint64_t a_generation,
             const bool a_requireRegion)
@@ -1220,9 +1254,16 @@ namespace MPL::Heliosphan
                     CellReadinessIssue(cell, a_requireRegion);
                 if (!issue.empty())
                 {
+                    RecordReadinessIssue(state, issue);
                     return;
                 }
 
+                LogReadinessCompleted(
+                    state,
+                    a_generation,
+                    cell,
+                    a_requireRegion,
+                    "game-load");
                 state.gameLoadPending = false;
                 ObjectOverrides::Patches::CompleteGameLoad(cell);
                 ExternalEmittance::ReplayCell(cell);
@@ -1245,10 +1286,18 @@ namespace MPL::Heliosphan
                 CellReadinessIssue(state.pendingCell, a_requireRegion);
             if (!issue.empty())
             {
+                RecordReadinessIssue(state, issue);
                 return;
             }
 
+            LogReadinessCompleted(
+                state,
+                state.generation,
+                state.pendingCell,
+                a_requireRegion,
+                "weather-transition");
             state.readinessPollAttempts = 0;
+            state.readinessLastIssue.clear();
             ApplyTransition(state.generation);
         }
 
@@ -1275,6 +1324,7 @@ namespace MPL::Heliosphan
             {
                 ++state.readinessPollAttempts;
             }
+            RecordReadinessIssue(state, issue);
             if (issue.empty())
             {
                 ProcessEngineReadyWork(
@@ -1286,8 +1336,7 @@ namespace MPL::Heliosphan
                      kMaxReadinessPollAttempts)
             {
                 logger::error(
-                    "[Weather Sync] Cancelled transition generation {} after "
-                    "{} readiness attempts; last condition: {}",
+                    "[Weather Sync] transition cancelled | generation={} | attempts={} | blocker={}",
                     a_generation,
                     state.readinessPollAttempts,
                     issue);
@@ -1344,8 +1393,7 @@ namespace MPL::Heliosphan
             }
 
             logger::warn(
-                "[Weather Sync] Transition readiness polling did not complete generation "
-                "{} within {} ms; attempting the attached-cell fallback",
+                "[Weather Sync] readiness timeout | generation={} | elapsed={}ms | attachedCellFallback=true",
                 a_generation,
                 std::chrono::duration_cast<std::chrono::milliseconds>(
                     kSkyUpdateWatchdogDelay)
@@ -1388,8 +1436,10 @@ namespace MPL::Heliosphan
             state.pendingDefaultRegionNotification = a_usedDefaultRegion;
             state.pendingDefaultWeatherNotification = a_usedDefaultWeather;
             state.readinessPollAttempts = 0;
+            state.readinessStarted = std::chrono::steady_clock::now();
+            state.readinessLastIssue.clear();
             LogDetailed(
-                "Weather transition requested: generation={}, cell={}, profile={}, source={}",
+                "transition=request | generation={} | cell={} | profile={} | source={}",
                 generation,
                 a_destinationCell ?
                     std::format("{:08X}", a_destinationCell->formID) :
@@ -1407,7 +1457,7 @@ namespace MPL::Heliosphan
                 {
                     LogProfile(
                         state.profiles[*releaseProfile],
-                        "Weather override released because the synchronized interior was exited");
+                        "override released | reason=interior exited");
                     state.pendingOverrideReleaseNotification = true;
                 }
             }
@@ -1449,7 +1499,7 @@ namespace MPL::Heliosphan
             return;
         }
         logger::info(
-            "[Cell Timing] cell={:08X} component=Heliosphan stage=start",
+            "[Cell Timing] cell={:08X} | component=Heliosphan | stage=start",
             cellID);
     }
 
@@ -1465,7 +1515,7 @@ namespace MPL::Heliosphan
         if (IsSpeedLoggingEnabled())
         {
             logger::info(
-                "[Cell Timing] cell={:08X} component=Heliosphan stage=finish last=cell change total={:.3f} ms",
+                "[Cell Timing] cell={:08X} | component=Heliosphan | stage=finish | last=cell change | total={:.3f}ms",
                 timing.cell,
                 ElapsedMilliseconds(timing.cellStarted));
         }
@@ -1522,7 +1572,7 @@ namespace MPL::Heliosphan
         if (found == profiles.end())
         {
             logger::error(
-                "[Heliosphan] Cannot change detailed logging for unknown profile '{}'",
+                "[Heliosphan] detailedLogging rejected | profile={} unknown",
                 a_profile);
             return false;
         }
@@ -1534,9 +1584,9 @@ namespace MPL::Heliosphan
         }
         found->detailedLogging = a_enabled;
         logger::info(
-            "[Heliosphan] [{}] Detailed logging {} from Papyrus",
+            "[Heliosphan] {} setting | detailedLogging={} | source=Papyrus",
             found->id,
-            a_enabled ? "enabled" : "disabled");
+            a_enabled);
         return true;
     }
 
@@ -1555,7 +1605,7 @@ namespace MPL::Heliosphan
             !EqualsIgnoreCase(found->id, kPrimaryProfile))
         {
             logger::error(
-                "[Heliosphan] Cannot change speed logging for profile '{}'",
+                "[Heliosphan] speedLogging rejected | profile={} unknown",
                 a_profile);
             return false;
         }
@@ -1565,9 +1615,9 @@ namespace MPL::Heliosphan
         }
         found->speedLogs = a_enabled;
         logger::info(
-            "[Heliosphan] [{}] Speed logging {} from Papyrus",
+            "[Heliosphan] {} setting | speedLogging={} | source=Papyrus",
             found->id,
-            a_enabled ? "enabled" : "disabled");
+            a_enabled);
         return true;
     }
 
@@ -1586,7 +1636,7 @@ namespace MPL::Heliosphan
             !EqualsIgnoreCase(found->id, kPrimaryProfile))
         {
             logger::error(
-                "[Heliosphan] Cannot change notifications for profile '{}'",
+                "[Heliosphan] notifications rejected | profile={} unknown",
                 a_profile);
             return false;
         }
@@ -1596,9 +1646,9 @@ namespace MPL::Heliosphan
         }
         found->notifications = a_enabled;
         logger::info(
-            "[Heliosphan] [{}] Notifications {} from Papyrus",
+            "[Heliosphan] {} setting | notifications={} | source=Papyrus",
             found->id,
-            a_enabled ? "enabled" : "disabled");
+            a_enabled);
         return true;
     }
 
@@ -1649,7 +1699,9 @@ namespace MPL::Heliosphan
             PendingProfile a_pending)
         {
             auto& settings = a_pending.settings;
-            logger::info("[Heliosphan] Loaded profile '{}'", settings.id);
+            logger::info(
+                "[Heliosphan] profile={} | status=active",
+                settings.id);
             AutoCSTonemapping::AddProfile(
                 settings.id,
                 settings.autoCSTonemapping,
@@ -1744,7 +1796,7 @@ namespace MPL::Heliosphan
                         hasLoadedPlugin))
                 {
                     logger::info(
-                        "[Heliosphan] Profile '{}' disabled because none of its {} top-level plugin gate(s) are loaded",
+                        "[Heliosphan] profile={} | status=disabled | pluginGates={}",
                         pending.settings.id,
                         pending.settings.plugins.size());
                     continue;
@@ -1752,7 +1804,7 @@ namespace MPL::Heliosphan
                 RegisterProfile(a_state, std::move(pending));
             }
             logger::info(
-                "[Heliosphan] Configuration activation finished with {} active profile(s)",
+                "[Heliosphan] profiles | active={}",
                 a_state.profiles.size());
         }
     }  // namespace
@@ -1775,11 +1827,10 @@ namespace MPL::Heliosphan
 
         std::error_code error;
         const std::filesystem::path root{ kConfigurationRoot };
-        logger::info("[Heliosphan] Scanning configuration folder {}", root.string());
         if (!std::filesystem::is_directory(root, error))
         {
             logger::info(
-                "[Heliosphan] Configuration folder is unavailable; Heliosphan will remain inactive (error={})",
+                "[Heliosphan] config unavailable | active=false | error={}",
                 error ? error.message() : "none");
             return;
         }
@@ -1799,15 +1850,13 @@ namespace MPL::Heliosphan
             }
         }
         std::ranges::sort(files);
-        logger::info("[Heliosphan] Discovered {} JSON configuration file(s)", files.size());
         const auto ownedSettings = ReadOwnedSettings();
         for (const auto& file : files)
         {
-            logger::info("[Heliosphan] Reading configuration {}", file.string());
             const auto parsed = rfl::json::read<Settings, rfl::DefaultIfMissing>(ReadText(file));
             if (!parsed)
             {
-                logger::warn("[Heliosphan] Could not read configuration {}: {}", file.string(), parsed.error().what());
+                logger::warn("[Heliosphan] config read failed | file={} | {}", file.string(), parsed.error().what());
                 continue;
             }
             auto settings = parsed.value();
@@ -1822,8 +1871,7 @@ namespace MPL::Heliosphan
                     }))
             {
                 logger::warn(
-                    "[Heliosphan] Skipping configuration {} because profile ID '{}' "
-                    "is already configured",
+                    "[Heliosphan] config skipped | file={} | profile={} duplicate",
                     file.string(),
                     settings.id);
                 continue;
@@ -1852,8 +1900,7 @@ namespace MPL::Heliosphan
                     settings.weatherSync.regionPrefix))
             {
                 logger::warn(
-                    "[Heliosphan] Configuration {} has weatherSync enabled without "
-                    "weatherPrefix and regionPrefix; weather synchronization is disabled",
+                    "[Heliosphan] config={} | weatherSync=false | weatherPrefix/regionPrefix missing",
                     file.string());
                 settings.weatherSync.enabled = false;
             }
@@ -1881,7 +1928,7 @@ namespace MPL::Heliosphan
                                       disabledMissingTarget)
                     {
                         logger::warn(
-                            "[Heliosphan] Configuration {} has {} emittancePatching without its required 'emmitance' field; that block is disabled",
+                            "[Heliosphan] config={} | {} emittancePatching=false | emmitance missing",
                             file.string(),
                             a_scope);
                         a_patching = {};
@@ -1891,7 +1938,7 @@ namespace MPL::Heliosphan
                                       disabledMissingCellFilter)
                     {
                         logger::warn(
-                            "[Heliosphan] Configuration {} has windowSync.emittancePatching without enabled windowSync.cellContains; that block is disabled",
+                            "[Heliosphan] config={} | windowSync.emittancePatching=false | cellContains disabled",
                             file.string());
                         a_patching = {};
                         return false;
@@ -1939,7 +1986,7 @@ namespace MPL::Heliosphan
                     !group.pluginExclusions.empty())
                 {
                     logger::warn(
-                        "[Heliosphan] Configuration {} has unsupported fields in windowSync.objects; only overrides are accepted there",
+                        "[Heliosphan] config={} | windowSync.objects unsupported fields ignored",
                         file.string());
                 }
                 windowOverrideCount += group.overrides.size();
@@ -1952,7 +1999,7 @@ namespace MPL::Heliosphan
                 !settings.windowSync.enabled)
             {
                 logger::warn(
-                    "[Heliosphan] Configuration {} has windowSync.objects overrides without enabled windowSync; those overrides are disabled",
+                    "[Heliosphan] config={} | objectOverrides=false | windowSync disabled",
                     file.string());
                 compiledWindowOverrides.clear();
                 windowOverrideCount = 0;
@@ -1969,21 +2016,19 @@ namespace MPL::Heliosphan
                 !settings.autoCSTonemapping.enabled)
             {
                 logger::warn(
-                    "[Heliosphan] Configuration {} does not declare any active behavior",
+                    "[Heliosphan] config={} | active behavior=none",
                     file.string());
                 continue;
             }
             settings.overrideDurationGameHours = std::max(0.0f, settings.overrideDurationGameHours);
-            logger::info(
-                "[Heliosphan] Parsed profile '{}'",
-                settings.id);
             state.pendingProfiles.push_back(PendingProfile{
                 .settings = std::move(settings),
                 .sourcePath = file,
             });
         }
         logger::info(
-            "[Heliosphan] Configuration parsing finished with {} candidate profile(s)",
+            "[Heliosphan] config | files={} | profiles={}",
+            files.size(),
             state.pendingProfiles.size());
     }
 
@@ -2008,7 +2053,7 @@ namespace MPL::Heliosphan
                 if (state.profiles[index].detailedLogging)
                 {
                     logger::info(
-                        "[Heliosphan] [{}] Registered synchronized interior cell {:08X} from provider '{}'",
+                        "[Heliosphan] {} cell | cell={:08X} | provider={}",
                         state.profiles[index].id,
                         a_cell->formID,
                         a_provider);
@@ -2273,7 +2318,7 @@ namespace MPL::Heliosphan
                     else
                     {
                         logger::warn(
-                            "[Weather Sync] [{}] Configured fallback weather '{}' could not be resolved",
+                            "[Weather Sync] {} fallback={} unresolved",
                             settings.id,
                             settings.weatherSync.fallbackWeather);
                     }
@@ -2297,13 +2342,13 @@ namespace MPL::Heliosphan
                 {
                     LogProfile(
                         state.profiles[*releaseProfile],
-                        "Weather override released because the synchronized interior was exited");
+                        "override released | reason=interior exited");
                     ShowNotification(state.profiles[*releaseProfile], "Weather Override Released");
                 }
             }
             state.activeProfile.reset();
             ClearPendingTransition(state);
-            logger::warn("[Weather Sync] Could not capture an active weather for the cell transition");
+            logger::warn("[Weather Sync] transition weather capture failed | active weather unavailable");
             return;
         }
         const auto weatherProfile = ProfileForWeather(a_sourceWeather);
@@ -2312,7 +2357,7 @@ namespace MPL::Heliosphan
             state.activeProfile = destination;
             ClearPendingTransition(state);
             LogDetailed(
-                "Weather transition skipped: cell={}, profile={}, weather={} is already synchronized",
+                "transition=skip | cell={} | profile={} | weather={} | reason=already-synchronized",
                 a_cell ? std::format("{:08X}", a_cell->formID) : "<none>",
                 DescribeProfile(destination),
                 DescribeWeather(a_sourceWeather));
@@ -2379,29 +2424,25 @@ namespace MPL::Heliosphan
             if (plugins.empty())
             {
                 logger::info(
-                    "[Room Marker] [{}] Cleaning enabled: no plugin gate "
-                    "configured, {} excluded marker source plugin(s)",
+                    "[Room Marker] {} | enabled=true | pluginGates=0 | exclusions={}",
                     settings.id,
                     excludedPlugins.size());
             }
             else
             {
                 logger::info(
-                    "[Room Marker] [{}] Cleaning {}: {} configured plugin "
-                    "gate(s), {} excluded marker source plugin(s)",
+                    "[Room Marker] {} | enabled={} | pluginGates={} | exclusions={}",
                     settings.id,
-                    state.roomMarkerCleaningActive[index] ?
-                        "enabled" :
-                        "skipped",
+                    static_cast<bool>(state.roomMarkerCleaningActive[index]),
                     plugins.size(),
                     excludedPlugins.size());
             }
         }
         state.mmsf = MPL::API::MMSF::RequestMMSFAPI();
         logger::info(
-            "[Heliosphan] Data-loaded initialization: active profiles={}, MMSF API={}",
+            "[Heliosphan] init | profiles={} | MMSF={}",
             state.profiles.size(),
-            state.mmsf ? "available" : "unavailable");
+            state.mmsf != nullptr);
         const bool requiresMMSF = std::ranges::any_of(
             state.profiles,
             [](const Settings& a_settings)
@@ -2411,9 +2452,7 @@ namespace MPL::Heliosphan
             });
         if (requiresMMSF && !state.mmsf)
         {
-            logger::error(
-                "[Weather Sync] Weather and region synchronization disabled because the "
-                "MMSF API is unavailable; Object Overrides and non-region Window Sync layers remain active");
+            logger::error("[Weather Sync] weather/region sync=false | MMSF unavailable | object/non-region layers=true");
         }
         LifecycleTiming::BeginStartupPhase(
             LifecycleTiming::StartupPhase::RegionPatching);
@@ -2443,6 +2482,9 @@ namespace MPL::Heliosphan
                 auto& state = GetState();
                 state.gameLoadPending = true;
                 state.readinessPollAttempts = 0;
+                state.readinessStarted =
+                    std::chrono::steady_clock::now();
+                state.readinessLastIssue.clear();
                 const auto generation = state.generation;
                 ScheduleReadinessPoll(generation);
                 ScheduleReadinessWatchdog(generation);
@@ -2462,6 +2504,8 @@ namespace MPL::Heliosphan
                 state.releaseAtGameDay.reset();
                 state.gameLoadPending = false;
                 state.readinessPollAttempts = 0;
+                state.readinessStarted = {};
+                state.readinessLastIssue.clear();
                 ClearPendingTransition(state);
             });
     }

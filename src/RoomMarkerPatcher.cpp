@@ -259,9 +259,9 @@ namespace MPL::RoomMarkerPatcher
             return;
         }
         LogDetailed(
-            "RoomMarker cleaning {} for cell {:08X}; checked {} initialized marker(s), cleaned {}, removed {} lighting template(s) and {} image space(s)",
-            a_enabled ? "enabled" : "disabled",
+            "cell={:08X} | enabled={} | checked={} | cleaned={} | templates={} | imageSpaces={}",
             a_cell->GetFormID(),
+            a_enabled,
             result.markers,
             result.cleaned,
             result.lightingTemplates,

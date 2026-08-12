@@ -23,8 +23,6 @@ namespace MPL::RegionWeatherPatcher
 
         struct Summary
         {
-            std::size_t configuredPlugins = 0;
-            std::size_t loadedPlugins = 0;
             std::size_t targetRegions = 0;
             std::size_t patchedRegions = 0;
             std::size_t missingSourceRegions = 0;
@@ -156,7 +154,7 @@ namespace MPL::RegionWeatherPatcher
             if (a_enabled)
             {
                 logger::warn(
-                    "[Weather Sync] [{}] [Region Weather] {}",
+                    "[Region Weather] [{}] {}",
                     a_profile,
                     std::format(
                         a_format,
@@ -178,21 +176,19 @@ namespace MPL::RegionWeatherPatcher
             return;
         }
 
-        Summary summary{ .configuredPlugins = a_settings.plugins.size() };
+        Summary summary;
         auto* dataHandler = RE::TESDataHandler::GetSingleton();
         if (!dataHandler || !a_mmsf)
         {
             logger::error(
-                "[Weather Sync] [{}] [Region Weather] Startup patching "
-                "requires TESDataHandler and MMSF",
+                "[Region Weather] [{}] startup failed | TESDataHandler/MMSF unavailable",
                 a_profile);
             return;
         }
         if (a_weatherPrefix.empty() || a_regionPrefix.empty())
         {
             logger::warn(
-                "[Weather Sync] [{}] [Region Weather] Startup patching "
-                "requires weatherSync.weatherPrefix and weatherSync.regionPrefix",
+                "[Region Weather] [{}] startup skipped | weatherPrefix/regionPrefix missing",
                 a_profile);
             return;
         }
@@ -204,25 +200,15 @@ namespace MPL::RegionWeatherPatcher
             if (plugin)
             {
                 targetPlugins.insert(plugin);
-                ++summary.loadedPlugins;
             }
         }
         if (targetPlugins.empty())
         {
             logger::info(
-                "[Weather Sync] [{}] [Region Weather] Skipped: none of "
-                "the {} configured target plugin(s) are loaded",
-                a_profile,
-                summary.configuredPlugins);
+                "[Region Weather] [{}] status=skipped | reason=no-target-plugin",
+                a_profile);
             return;
         }
-
-        logger::info(
-            "[Weather Sync] [{}] [Region Weather] Startup patching began: "
-            "{} of {} configured target plugin(s) loaded",
-            a_profile,
-            summary.loadedPlugins,
-            summary.configuredPlugins);
 
         for (auto* targetRegion :
             dataHandler->GetFormArray<RE::TESRegion>())
@@ -249,8 +235,7 @@ namespace MPL::RegionWeatherPatcher
                 LogDetailedWarning(
                     a_detailedLogging,
                     a_profile,
-                    "Target region "
-                    "'{}' has no winning source region '{}'; skipped",
+                    "'{}' skipped | source='{}' missing",
                     targetEditorID,
                     sourceEditorID);
                 continue;
@@ -264,8 +249,7 @@ namespace MPL::RegionWeatherPatcher
                 LogDetailedWarning(
                     a_detailedLogging,
                     a_profile,
-                    "Target '{}' was "
-                    "skipped because {} has no RDWT weather data container",
+                    "'{}' skipped | RDWT={} missing",
                     targetEditorID,
                     !sourceData ? "the winning source region" :
                                   "the target region");
@@ -288,9 +272,7 @@ namespace MPL::RegionWeatherPatcher
                     LogDetailedWarning(
                         a_detailedLogging,
                         a_profile,
-                        "Target '{}' "
-                        "omitted source weather {:08X} because its EditorID "
-                        "could not be resolved",
+                        "'{}' omitted {:08X} | source EditorID missing",
                         targetEditorID,
                         sourceType->weather->formID);
                     continue;
@@ -305,14 +287,14 @@ namespace MPL::RegionWeatherPatcher
                 if (!targetWeather)
                 {
                     ++summary.omittedEntries;
-                    LogDetailedWarning(
-                        a_detailedLogging,
-                        a_profile,
-                        "Target '{}' "
-                        "omitted '{}' because paired weather '{}' is missing",
-                        targetEditorID,
-                        sourceWeatherEditorID,
-                        targetWeatherEditorID);
+                    if (a_detailedLogging)
+                    {
+                        logger::warn(
+                            "[Region Weather] [{}] '{}' omitted '{}' paired weather missing",
+                            a_profile,
+                            targetEditorID,
+                            sourceWeatherEditorID);
+                    }
                     continue;
                 }
 
@@ -330,10 +312,8 @@ namespace MPL::RegionWeatherPatcher
                 LogDetailedWarning(
                     a_detailedLogging,
                     a_profile,
-                    "Target '{}' had "
-                    "no matching {} weather entries; left unchanged",
-                    targetEditorID,
-                    a_profile);
+                    "'{}' unchanged | matching=0",
+                    targetEditorID);
                 continue;
             }
 
@@ -357,8 +337,7 @@ namespace MPL::RegionWeatherPatcher
                     RE::free(weatherType);
                 }
                 logger::error(
-                    "[Weather Sync] [{}] [Region Weather] Target '{}' was "
-                    "left unchanged because allocation failed",
+                    "[Region Weather] [{}] '{}' unchanged | allocation failed",
                     a_profile,
                     targetEditorID);
                 continue;
@@ -377,9 +356,7 @@ namespace MPL::RegionWeatherPatcher
         }
 
         logger::info(
-            "[Weather Sync] [{}] [Region Weather] Startup patching "
-            "finished: targets={}, patched={}, source-missing={}, "
-            "RDWT-missing={}, source entries={}, copied={}, omitted={}",
+            "[Region Weather] [{}] targets={} | patched={} | sourceMissing={} | RDWTMissing={} | entries={} copied/{} omitted",
             a_profile,
             summary.targetRegions,
             summary.patchedRegions,

@@ -187,7 +187,7 @@ namespace MPL::ObjectOverrides
                 ++loadedOverrides;
             }
             logger::info(
-                "[Object Overrides] [{}] Object override resolution: found={}, skipped={}",
+                "[Object Overrides] {} resolve | found={} | skipped={}",
                 logID,
                 loadedOverrides,
                 skippedOverrides);
@@ -351,10 +351,10 @@ namespace MPL::ObjectOverrides
             TakeApplications(a_cell->GetFormID()))
         {
             logger::info(
-                "[Object Overrides] [{}] Successfully applied {} object override(s) in cell {:08X}",
+                "[Object Overrides] {} apply | cell={:08X} | references={}",
                 profile,
-                applied,
-                a_cell->GetFormID());
+                a_cell->GetFormID(),
+                applied);
         }
         return changed;
     }
@@ -503,8 +503,8 @@ namespace MPL::ObjectOverrides::Patches
             auto* dataHandler = RE::TESDataHandler::GetSingleton();
             if (!dataHandler)
             {
-                logger::warn(
-                    "[Object Overrides] [{}] Ignored because plugin filters cannot be evaluated without TESDataHandler",
+            logger::warn(
+                "[Object Overrides] {} ignored | plugin filters unavailable | TESDataHandler unavailable",
                     a_profile.id);
                 return false;
             }
@@ -516,8 +516,8 @@ namespace MPL::ObjectOverrides::Patches
                         return PluginLoaded(*dataHandler, a_plugin);
                     }))
             {
-                logger::info(
-                    "[Object Overrides] [{}] Ignored because a loaded plugin matches pluginExclusions",
+            logger::info(
+                "[Object Overrides] {} ignored | pluginExclusions matched",
                     a_profile.id);
                 return false;
             }
@@ -529,8 +529,8 @@ namespace MPL::ObjectOverrides::Patches
                         return PluginLoaded(*dataHandler, a_plugin);
                     }))
             {
-                logger::info(
-                    "[Object Overrides] [{}] Ignored because no loaded plugin matches pluginInclusions",
+            logger::info(
+                "[Object Overrides] {} ignored | pluginInclusions unmatched",
                     a_profile.id);
                 return false;
             }
@@ -546,7 +546,7 @@ namespace MPL::ObjectOverrides::Patches
             if (!form)
             {
                 logger::warn(
-                    "[Object Overrides] [{}] Object transform '{}' base '{}' could not be resolved",
+                "[Object Overrides] {} transform={} | base={} unresolved",
                     a_profile.id,
                     a_reference,
                     a_selector);
@@ -555,7 +555,7 @@ namespace MPL::ObjectOverrides::Patches
             if (form->GetFormType() != RE::FormType::Static)
             {
                 logger::warn(
-                    "[Object Overrides] [{}] Object transform '{}' base '{}' [{:08X}] is not a STAT form",
+                "[Object Overrides] {} transform={} | base={} [{:08X}] | type=invalid",
                     a_profile.id,
                     a_reference,
                     a_selector,
@@ -577,7 +577,7 @@ namespace MPL::ObjectOverrides::Patches
                 currentBase->GetFormType() != RE::FormType::Static)
             {
                 logger::warn(
-                    "[Object Overrides] [{}] Object transform '{}' [{:08X}] does not use a STAT base",
+                "[Object Overrides] {} transform={} [{:08X}] | STAT base missing",
                     a_profile.id,
                     a_selector,
                     a_reference.GetFormID());
@@ -586,7 +586,7 @@ namespace MPL::ObjectOverrides::Patches
             if (a_reference.Is3DLoaded())
             {
                 logger::warn(
-                    "[Object Overrides] [{}] Object transform '{}' [{:08X}] already has loaded 3D and was not moved",
+                "[Object Overrides] {} transform={} [{:08X}] | moved=false | 3D loaded",
                     a_profile.id,
                     a_selector,
                     a_reference.GetFormID());
@@ -607,7 +607,7 @@ namespace MPL::ObjectOverrides::Patches
                 else
                 {
                     logger::warn(
-                        "[Object Overrides] [{}] Object transform '{}' [{:08X}] could not replace base {:08X} with {:08X}; independent transform fields will still be applied",
+                "[Object Overrides] {} transform={} [{:08X}] | base {:08X}->{:08X} failed | fields continue",
                         a_profile.id,
                         a_selector,
                         a_reference.GetFormID(),
@@ -673,7 +673,7 @@ namespace MPL::ObjectOverrides::Patches
             if (!cell)
             {
                 logger::warn(
-                    "[Object Overrides] [{}] Object placement '{}' cell '{}' could not be resolved",
+                "[Object Overrides] {} placement={} | cell={} unresolved",
                     a_profile.id,
                     a_placement,
                     a_selector);
@@ -682,7 +682,7 @@ namespace MPL::ObjectOverrides::Patches
             if (!cell->IsInteriorCell())
             {
                 logger::warn(
-                    "[Object Overrides] [{}] Object placement '{}' cell '{}' [{:08X}] is not an interior cell",
+                "[Object Overrides] {} placement={} | cell={} [{:08X}] | interior=false",
                     a_profile.id,
                     a_placement,
                     a_selector,
@@ -701,7 +701,7 @@ namespace MPL::ObjectOverrides::Patches
             if (!form)
             {
                 logger::warn(
-                    "[Object Overrides] [{}] Object placement '{}' base '{}' could not be resolved",
+                "[Object Overrides] {} placement={} | base={} unresolved",
                     a_profile.id,
                     a_placement,
                     a_selector);
@@ -710,7 +710,7 @@ namespace MPL::ObjectOverrides::Patches
             if (form->GetFormType() != RE::FormType::Static)
             {
                 logger::warn(
-                    "[Object Overrides] [{}] Object placement '{}' base '{}' [{:08X}] is not a STAT form",
+                "[Object Overrides] {} placement={} | base={} [{:08X}] | type=invalid",
                     a_profile.id,
                     a_placement,
                     a_selector,
@@ -728,14 +728,14 @@ namespace MPL::ObjectOverrides::Patches
             if (a_id.empty())
             {
                 logger::warn(
-                    "[Object Overrides] [{}] Ignored an object placement with an empty name",
+                "[Object Overrides] {} placement ignored | name empty",
                     a_profile.id);
                 return false;
             }
             if (!a_placement.position || !a_placement.rotation)
             {
                 logger::warn(
-                    "[Object Overrides] [{}] Object placement '{}' requires position and rotation",
+                "[Object Overrides] {} placement={} | position/rotation required",
                     a_profile.id,
                     a_id);
                 return false;
@@ -746,7 +746,7 @@ namespace MPL::ObjectOverrides::Patches
                     !IsValidScale(*a_placement.scale)))
             {
                 logger::warn(
-                    "[Object Overrides] [{}] Object placement '{}' contains an invalid transform or scale",
+                "[Object Overrides] {} placement={} | transform/scale invalid",
                     a_profile.id,
                     a_id);
                 return false;
@@ -801,8 +801,7 @@ namespace MPL::ObjectOverrides::Patches
         auto& state = GetState();
         if (state.initialized)
         {
-            logger::error(
-                "[Object Overrides] Configuration cannot be cleared after initialization");
+        logger::error("[Object Overrides] configuration clear rejected | initialized=true");
             return;
         }
         state.profiles.clear();
@@ -881,7 +880,7 @@ namespace MPL::ObjectOverrides::Patches
                     !transform.rotation && !transform.scale)
                 {
                     logger::warn(
-                        "[Object Overrides] [{}] Object transform '{}' does not define base, position, rotation, or scale",
+                    "[Object Overrides] {} transform={} | fields empty",
                         profile.id,
                         selector);
                     continue;
@@ -894,7 +893,7 @@ namespace MPL::ObjectOverrides::Patches
                         !IsValidScale(*transform.scale)))
                 {
                     logger::warn(
-                        "[Object Overrides] [{}] Object transform '{}' contains an invalid transform or scale",
+                    "[Object Overrides] {} transform={} | transform/scale invalid",
                         profile.id,
                         selector);
                     continue;
@@ -903,7 +902,7 @@ namespace MPL::ObjectOverrides::Patches
                 if (!formID)
                 {
                     logger::warn(
-                        "[Object Overrides] [{}] Object transform selector '{}' could not be resolved to a FormID",
+                    "[Object Overrides] {} transform selector={} | FormID unresolved",
                         profile.id,
                         selector);
                     continue;
@@ -925,7 +924,7 @@ namespace MPL::ObjectOverrides::Patches
                         profile.id.c_str()) != 0)
                 {
                     logger::warn(
-                        "[Object Overrides] [{}] Object transform {:08X} was already configured by profile '{}'; later configuration takes precedence",
+                    "[Object Overrides] {} transform={:08X} | replaces profile={}",
                         profile.id,
                         formID,
                         owner->second);
@@ -974,7 +973,7 @@ namespace MPL::ObjectOverrides::Patches
             }
         }
         logger::info(
-            "[Object Overrides] Initialization completed: groups={}/{}, indexed transforms={}/{}, placements={}/{}, startup transform references applied={}/{}",
+            "[Object Overrides] init | groups={}/{} | transforms={}/{} | placements={}/{} | replay={}/{}",
             activeGroups,
             state.profiles.size(),
             indexedTransforms,
@@ -1098,8 +1097,7 @@ namespace MPL::ObjectOverrides::Patches
         auto* dataHandler = RE::TESDataHandler::GetSingleton();
         if (!dataHandler)
         {
-            logger::error(
-                "[Object Overrides] Could not create object placements because TESDataHandler is unavailable");
+            logger::error("[Object Overrides] placements failed | TESDataHandler unavailable");
             return;
         }
 
@@ -1137,7 +1135,7 @@ namespace MPL::ObjectOverrides::Patches
             {
                 ++failed;
                 logger::error(
-                    "[Object Overrides] [{}] Could not create object placement '{}' in cell {:08X}",
+                    "[Object Overrides] {} placement={} | cell={:08X} | create failed",
                     placement.profile,
                     placement.id,
                     placement.cell->GetFormID());
@@ -1182,7 +1180,7 @@ namespace MPL::ObjectOverrides::Patches
         if (created != 0 || failed != 0)
         {
             logger::info(
-                "[Object Overrides] Object placement creation completed: created={}, retained={}, failed={}",
+                "[Object Overrides] placements | created={} | retained={} | failed={}",
                 created,
                 retained,
                 failed);

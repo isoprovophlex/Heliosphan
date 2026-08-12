@@ -148,7 +148,7 @@ namespace MPL::LifecycleTiming
             return;
         }
         logger::info(
-            "[Startup Timing] component=Heliosphan stage=finish total={:.3f} ms, engine wait={:.3f} ms, queue wait={:.3f} ms, configuration={:.3f} ms, region patching={:.3f} ms, plugin indexing={:.3f} ms, cell classification={:.3f} ms, external emittance={:.3f} ms, Light Placer={:.3f} ms, deferred replay={:.3f} ms",
+            "[Startup Timing] component=Heliosphan | stage=finish | total={:.3f}ms | engineWait={:.3f}ms | queueWait={:.3f}ms | configuration={:.3f}ms | regionPatching={:.3f}ms | pluginIndexing={:.3f}ms | cellClassification={:.3f}ms | externalEmittance={:.3f}ms | LightPlacer={:.3f}ms | deferredReplay={:.3f}ms",
             Milliseconds(now - startup.started),
             Milliseconds(startup.engineWait),
             Milliseconds(startup.queueWait),
@@ -175,7 +175,7 @@ namespace MPL::LifecycleTiming
         if (Heliosphan::IsSpeedLoggingEnabled())
         {
             logger::info(
-                "[Game Load Timing] component=Heliosphan stage=start");
+                "[Game Load Timing] component=Heliosphan | stage=start");
         }
     }
 
@@ -188,7 +188,7 @@ namespace MPL::LifecycleTiming
             return;
         }
         logger::info(
-            "[Game Load Timing] component=Heliosphan stage=finish total={:.3f} ms",
+            "[Game Load Timing] component=Heliosphan | stage=finish | total={:.3f}ms",
             Milliseconds(Clock::now() - gameLoad.started));
     }
 }  // namespace MPL::LifecycleTiming

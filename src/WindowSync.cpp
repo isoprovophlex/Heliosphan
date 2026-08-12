@@ -32,22 +32,14 @@ namespace MPL::WindowSync
             bool finishCalled = false;
         };
 
-        struct CellInventoryEntry
-        {
-            RE::FormID cell = 0;
-            std::vector<std::string> profiles;
-        };
-
         struct State
         {
             bool hasWindowProfiles = false;
-            bool collectingCellInventory = false;
             bool initializationRequested = false;
             bool classificationApplied = false;
             bool startupPreparationStarted = false;
             RE::FormID lastKnownRegion = 0;
             std::optional<PendingTransition> pending;
-            std::vector<CellInventoryEntry> cellInventory;
         };
 
         State& GetState()
@@ -228,11 +220,8 @@ namespace MPL::WindowSync
             if (a_profile.debugLogging && !appliedFlags.empty())
             {
                 logger::info(
-                    "[Window Sync] [{}] Applied cell flags to '{}' [{:08X}]: {}",
+                    "[Window Sync] {} flags | cell={:08X} | {}",
                     a_profile.id,
-                    a_cell->GetFormEditorID() ?
-                        a_cell->GetFormEditorID() :
-                        "<no EditorID>",
                     a_cell->GetFormID(),
                     appliedFlags);
             }
@@ -300,12 +289,6 @@ namespace MPL::WindowSync
             {
                 return false;
             }
-            for (const auto& profile : profiles)
-            {
-                ApplyIndexedCellSettings(
-                    a_transition.destination,
-                    profile);
-            }
             ApplyRoomMarkerCleaning(
                 a_transition.destination,
                 profiles);
@@ -334,7 +317,7 @@ namespace MPL::WindowSync
                 else
                 {
                     logger::warn(
-                        "[Window Sync] [{}] Configured fallback region '{}' could not be resolved",
+                "[Window Sync] {} fallback region={} unresolved",
                         syncProfile->id,
                         syncProfile->fallbackRegion);
                 }
@@ -342,7 +325,7 @@ namespace MPL::WindowSync
             if (!sourceRegion)
             {
                 logger::warn(
-                    "[Window Sync] [{}] Could not apply cell {:08X} because no source or last-known region is available",
+                "[Window Sync] {} apply failed | cell={:08X} | source/last region unavailable",
                     syncProfile->id,
                     a_transition.destination ? a_transition.destination->GetFormID() : 0);
                 ShowRegionSyncFailure(*syncProfile);
@@ -356,7 +339,7 @@ namespace MPL::WindowSync
                 if (targetResolution.forced)
                 {
                     logger::warn(
-                        "[Window Sync] [{}] Forced region override '{}' -> '{}' could not be resolved for cell {:08X}",
+                "[Window Sync] {} forced region {}->{} unresolved | cell={:08X}",
                         syncProfile->id,
                         RegionEditorID(sourceRegion),
                         targetResolution.targetEditorID,
@@ -365,7 +348,7 @@ namespace MPL::WindowSync
                 else
                 {
                     logger::warn(
-                        "[Window Sync] [{}] Could not find the synchronized region '{}' for cell {:08X}",
+                "[Window Sync] {} synchronized region={} missing | cell={:08X}",
                         syncProfile->id,
                         targetResolution.targetEditorID,
                         a_transition.destination ? a_transition.destination->GetFormID() : 0);
@@ -380,7 +363,7 @@ namespace MPL::WindowSync
                     if (!syncProfile->fallbackRegion.empty())
                     {
                         logger::warn(
-                            "[Window Sync] [{}] Configured fallback region '{}' could not be resolved to a synchronized region",
+                "[Window Sync] {} fallback region={} | synchronized target missing",
                             syncProfile->id,
                             syncProfile->fallbackRegion);
                     }
@@ -401,9 +384,8 @@ namespace MPL::WindowSync
             LogDetailed(
                 *syncProfile,
                 std::format(
-                    "Window Sync applied: cell={:08X}, profile={}, region='{}', layers={}, fallback={}, forced={}",
+                    "apply | cell={:08X} | region='{}' | layers={} | fallback={} | forced={}",
                     a_transition.destination->GetFormID(),
-                    syncProfile->id,
                     RegionEditorID(targetRegion),
                     profiles.size(),
                     a_transition.usedDefaultRegion,
@@ -464,26 +446,6 @@ namespace MPL::WindowSync
             {
                 return;
             }
-            if (state.collectingCellInventory &&
-                !a_profileIDs.empty())
-            {
-                CellInventoryEntry entry{
-                    .cell = a_cell->GetFormID(),
-                    .profiles = a_profileIDs,
-                };
-                const auto existing = std::ranges::find(
-                    state.cellInventory,
-                    entry.cell,
-                    &CellInventoryEntry::cell);
-                if (existing == state.cellInventory.end())
-                {
-                    state.cellInventory.push_back(std::move(entry));
-                }
-                else
-                {
-                    existing->profiles = std::move(entry.profiles);
-                }
-            }
             std::vector<Heliosphan::WindowSyncProfile> profiles;
             if (!a_profileIDs.empty())
             {
@@ -514,45 +476,6 @@ namespace MPL::WindowSync
             DispatchResolvedTransition();
         }
 
-        void LogCellInventory(std::vector<CellInventoryEntry>& a_entries)
-        {
-            if (!Heliosphan::IsDetailedLoggingEnabled())
-            {
-                return;
-            }
-            std::ranges::sort(
-                a_entries,
-                {},
-                &CellInventoryEntry::cell);
-            logger::info(
-                "[Window Sync] Window Sync cell inventory begin: {} matched cell(s)",
-                a_entries.size());
-            for (const auto& entry : a_entries)
-            {
-                std::string profiles;
-                for (const auto& profile : entry.profiles)
-                {
-                    if (!profiles.empty())
-                    {
-                        profiles.append(", ");
-                    }
-                    profiles.append(profile);
-                }
-                logger::info(
-                    "[Window Sync] Window Sync cell {:08X}: profiles=[{}]",
-                    entry.cell,
-                    profiles);
-            }
-            logger::info("[Window Sync] Window Sync cell inventory end");
-        }
-
-        void FinishCellInventory()
-        {
-            auto& state = GetState();
-            state.collectingCellInventory = false;
-            LogCellInventory(state.cellInventory);
-        }
-
         void ApplyPreparedClassification()
         {
             auto& state = GetState();
@@ -565,8 +488,6 @@ namespace MPL::WindowSync
 
             state.classificationApplied = true;
             state.hasWindowProfiles = CellClassifier::HasProfiles();
-            state.cellInventory.clear();
-            state.collectingCellInventory = true;
             for (std::size_t index = 0;
                  index < CellClassifier::GetProfiledCellCount();
                  ++index)
@@ -587,10 +508,6 @@ namespace MPL::WindowSync
                     cell,
                     CellClassifier::GetProfiles(cellID));
             }
-            FinishCellInventory();
-            logger::info(
-                "[Window Sync] cellContains profiles={}",
-                state.hasWindowProfiles ? "available" : "none");
         }
 
         bool PrepareWindowSyncProfiles()
@@ -646,11 +563,11 @@ namespace MPL::WindowSync
                         CellClassifier::GetExcludedCells();
                 }
                 logger::info(
-                    "[Window Sync] Plugin index pruning: exterior cells={}, excluded interior cells={}, global Light Placer={}, global external emittance={}",
+                    "[Window Sync] index plan | exterior={} | excludedCells={} | LightPlacer={} | externalEmittance={}",
                     indexOptions.skipExteriorCells ? "skipped" : "retained",
                     indexOptions.excludedCells.size(),
-                    globalLightPlacer ? "active" : "inactive",
-                    globalExternalEmittance ? "active" : "inactive");
+                    globalLightPlacer,
+                    globalExternalEmittance);
                 LifecycleTiming::BeginStartupPhase(
                     LifecycleTiming::StartupPhase::PluginIndex);
                 index = PluginIndex::Build(indexOptions);
@@ -661,7 +578,7 @@ namespace MPL::WindowSync
             {
                 index.complete = true;
                 logger::info(
-                    "[Window Sync] Plugin index skipped because no active feature requires saved reference data");
+                    "[Window Sync] index | status=skipped | reason=no-consumer");
             }
             LifecycleTiming::BeginStartupPhase(
                 LifecycleTiming::StartupPhase::CellClassification);
@@ -740,8 +657,7 @@ namespace MPL::WindowSync
             if (Heliosphan::IsDetailedLoggingEnabled())
             {
                 logger::info(
-                    "[Window Sync] Captured last-known region '{}' [{:08X}] from cell {:08X}",
-                    editorID.empty() ? "<no EditorID>" : editorID,
+                    "[Window Sync] region capture | region={:08X} | cell={:08X}",
                     region->GetFormID(),
                     sourceCell ? sourceCell->GetFormID() : 0);
             }
@@ -796,7 +712,7 @@ namespace MPL::WindowSync
         if (!a_serialization ||
             !a_serialization->OpenRecord('WNSY', kSerializationVersion))
         {
-            logger::error("[Window Sync] Failed to open the serialization record");
+            logger::error("[Window Sync] serialization open failed");
             return;
         }
         const auto formID = GetState().lastKnownRegion;
@@ -804,7 +720,7 @@ namespace MPL::WindowSync
                 std::addressof(formID),
                 sizeof(formID)))
         {
-            logger::error("[Window Sync] Failed to save the last-known region");
+            logger::error("[Window Sync] last region save failed");
         }
     }
 
@@ -817,7 +733,7 @@ namespace MPL::WindowSync
             a_length < sizeof(RE::FormID))
         {
             logger::warn(
-                "[Window Sync] Ignored unsupported serialization record version {} with {} byte(s)",
+                "[Window Sync] serialization ignored | version={} | bytes={}",
                 a_version,
                 a_length);
             return;
@@ -827,15 +743,15 @@ namespace MPL::WindowSync
         if (a_serialization->ReadRecordData(std::addressof(saved), sizeof(saved)) !=
             sizeof(saved))
         {
-            logger::error("[Window Sync] Failed to read the last-known region");
+            logger::error("[Window Sync] last region read failed");
             return;
         }
         RE::FormID resolved = 0;
         if (saved && a_serialization->ResolveFormID(saved, resolved))
         {
             GetState().lastKnownRegion = resolved;
-            logger::info(
-                "[Window Sync] Restored last-known region {:08X} from the SKSE co-save",
+        logger::info(
+            "[Window Sync] last region={:08X} | source=SKSE co-save",
                 resolved);
         }
     }

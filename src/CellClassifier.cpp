@@ -254,13 +254,6 @@ namespace MPL::CellClassifier
                        nullptr;
         }
 
-        const char* TextOrFallback(
-            const char* a_value,
-            const char* a_fallback)
-        {
-            return a_value && *a_value ? a_value : a_fallback;
-        }
-
         void LogExcludedCell(
             const Rule& a_rule,
             const RE::TESObjectCELL* a_cell,
@@ -273,29 +266,17 @@ namespace MPL::CellClassifier
             if (!a_locationType)
             {
                 logger::info(
-                    "[Window Sync] [{}] Excluded cell '{}' [{:08X}] because it is listed in excludedCells",
+                    "[Window Sync] {} exclude | cell={:08X} | source=excludedCells",
                     a_rule.owner,
-                    TextOrFallback(
-                        a_cell->GetFormEditorID(),
-                        "<no EditorID>"),
                     a_cell->GetFormID());
                 return;
             }
             const auto* location = a_cell->GetLocation();
             logger::info(
-                "[Window Sync] [{}] Excluded cell '{}' [{:08X}] because location '{}' [{:08X}] has excluded location type '{}' [{:08X}]",
+                "[Window Sync] {} exclude | cell={:08X} | location={:08X} | keyword={:08X}",
                 a_rule.owner,
-                TextOrFallback(
-                    a_cell->GetFormEditorID(),
-                    "<no EditorID>"),
                 a_cell->GetFormID(),
-                TextOrFallback(
-                    location ? location->GetFullName() : nullptr,
-                    "<unnamed location>"),
                 location ? location->GetFormID() : 0,
-                TextOrFallback(
-                    a_locationType->GetFormEditorID(),
-                    "<no EditorID>"),
                 a_locationType->GetFormID());
         }
 
@@ -469,20 +450,16 @@ namespace MPL::CellClassifier
             if (a_rule.detailedLogging)
             {
                 logger::info(
-                    "[Window Sync] [{}] Resolved cellContains: STAT forms={}, references={}, object placements={}, missing forms={}, invalid forms={}, missing references={}, cell origin plugins={}/{}, configured included cells={}, configured excluded cells={}, configured excluded location types={}, configured multi-location exceptions={}",
+                    "[Window Sync] {} cellContains | forms={} resolved/{} missing/{} invalid | references={} resolved/{} missing | cellPlugins={}/{} | objectPlacements={}",
                     a_rule.owner,
                     a_rule.forms.size(),
-                    a_rule.references.size(),
-                    a_rule.settings.objectPlacements,
                     missingForms,
                     invalidForms,
+                    a_rule.references.size(),
                     missingReferences,
                     a_rule.cellPlugins.size(),
                     a_rule.settings.plugins.size(),
-                    a_rule.includedCells.size(),
-                    a_rule.excludedCells.size(),
-                    a_rule.excludedLocationTypes.size(),
-                    a_rule.multiLocationExceptions.size());
+                    a_rule.settings.objectPlacements);
             }
         }
     }  // namespace
@@ -676,7 +653,7 @@ namespace MPL::CellClassifier
             }
         }
         logger::info(
-            "[Window Sync] Pre-parse cell exclusions resolved: active rules={}, excluded interior cells={}",
+            "[Window Sync] exclusions | rules={} | cells={}",
             activeRules,
             cells.size());
         return cells;
@@ -693,8 +670,7 @@ namespace MPL::CellClassifier
         }
         if (!a_index.complete)
         {
-            logger::warn(
-                "[Window Sync] Heliosphan plugin index is partial; cellContains classification and profile filtering are disabled for this session");
+            logger::warn("[Window Sync] classification disabled | plugin index partial");
             return false;
         }
 
@@ -908,7 +884,7 @@ namespace MPL::CellClassifier
 
         state.ready.store(true, std::memory_order_release);
         logger::info(
-            "[Window Sync] Cell classification completed: rules={}, profiled cells={}, projected placements={}, changed projected bases={}, plugins={}/{}, index={}",
+            "[Window Sync] classification | rules={} | cells={} | projected={} | changedBases={} | plugins={}/{} | index={}",
             state.rules.size(),
             state.cells.size(),
             projectedPlacementCount,

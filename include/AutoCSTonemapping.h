@@ -20,5 +20,7 @@ namespace MPL::AutoCSTonemapping
         std::filesystem::path a_sourcePath);
     bool GetProfileEnabled(std::string_view a_profile);
     bool SetProfileEnabled(std::string_view a_profile, bool a_enabled);
+    bool IsProfileApplied(std::string_view a_profile);
+    bool SetProfileSuppressed(std::string_view a_profile, bool a_suppressed);
     void ApplyStartup();
 }

@@ -48,6 +48,8 @@ namespace MPL::AutoCSTonemapping
             std::string id;
             Settings settings;
             std::filesystem::path sourcePath;
+            bool suppressed = false;
+            bool applied = false;
         };
 
         struct State
@@ -283,25 +285,60 @@ namespace MPL::AutoCSTonemapping
         if (found == state.profiles.end())
         {
             logger::error(
-                "[Auto CS Tonemapping] Cannot change setting "
-                "for unknown profile '{}'",
+                "[Auto CS Tonemapping] setting rejected | profile={} unknown",
                 a_profile);
             return false;
         }
         if (!WriteEnabled(*found, a_enabled))
         {
             logger::error(
-                "[Auto CS Tonemapping] [{}] Could not update setting in {}",
+                "[Auto CS Tonemapping] {} setting update failed | path={}",
                 found->id,
                 found->sourcePath.string());
             return false;
         }
         found->settings.enabled = a_enabled;
         logger::info(
-            "[Auto CS Tonemapping] [{}] Setting {} from "
-            "Papyrus; restart required",
+            "[Auto CS Tonemapping] {} setting | enabled={} | source=Papyrus | restart=true",
             found->id,
-            a_enabled ? "enabled" : "disabled");
+            a_enabled);
+        return true;
+    }
+
+    bool IsProfileApplied(const std::string_view a_profile)
+    {
+        auto& state = GetState();
+        std::scoped_lock lock(state.lock);
+        const auto found = std::ranges::find_if(
+            state.profiles,
+            [&](const Profile& a_candidate)
+            {
+                return EqualsIgnoreCase(
+                    a_candidate.id,
+                    a_profile);
+            });
+        return found != state.profiles.end() && found->applied;
+    }
+
+    bool SetProfileSuppressed(
+        const std::string_view a_profile,
+        const bool a_suppressed)
+    {
+        auto& state = GetState();
+        std::scoped_lock lock(state.lock);
+        const auto found = std::ranges::find_if(
+            state.profiles,
+            [&](const Profile& a_candidate)
+            {
+                return EqualsIgnoreCase(
+                    a_candidate.id,
+                    a_profile);
+            });
+        if (found == state.profiles.end())
+        {
+            return false;
+        }
+        found->suppressed = a_suppressed;
         return true;
     }
 
@@ -322,19 +359,24 @@ namespace MPL::AutoCSTonemapping
         auto* dataHandler = RE::TESDataHandler::GetSingleton();
         if (!dataHandler)
         {
-            logger::warn(
-                "[Auto CS Tonemapping] Could not run "
-                "because TESDataHandler is unavailable");
+            logger::warn("[Auto CS Tonemapping] init failed | TESDataHandler unavailable");
             return;
         }
 
+        struct ProfileTargets
+        {
+            std::string id;
+            std::unordered_set<RE::TESImageSpace*> imageSpaces;
+        };
+        std::vector<ProfileTargets> profileTargets;
         std::unordered_set<RE::TESImageSpace*> targets;
         for (const auto& profile : profiles)
         {
-            if (!profile.settings.enabled)
+            if (!profile.settings.enabled || profile.suppressed)
             {
                 continue;
             }
+            ProfileTargets matched{ .id = profile.id };
             for (const auto& pluginName :
                  profile.settings.plugins)
             {
@@ -343,8 +385,7 @@ namespace MPL::AutoCSTonemapping
                 if (!plugin)
                 {
                     logger::info(
-                        "[Auto CS Tonemapping] [{}] "
-                        "target plugin is not loaded: {}",
+                        "[Auto CS Tonemapping] {} | status=inactive | plugin={} missing",
                         profile.id,
                         pluginName);
                     continue;
@@ -355,9 +396,14 @@ namespace MPL::AutoCSTonemapping
                 {
                     if (HasSourcePlugin(imageSpace, plugin))
                     {
+                        matched.imageSpaces.insert(imageSpace);
                         targets.insert(imageSpace);
                     }
                 }
+            }
+            if (!matched.imageSpaces.empty())
+            {
+                profileTargets.push_back(std::move(matched));
             }
         }
         if (targets.empty())
@@ -381,9 +427,7 @@ namespace MPL::AutoCSTonemapping
         if (!filmicDetected && !whitePointDetected)
         {
             logger::info(
-                "[Auto CS Tonemapping] Found {} "
-                "target Image Space(s), but no active CS "
-                "Tonemapping configuration was detected",
+                "[Auto CS Tonemapping] targets={} | active=false",
                 targets.size());
             return;
         }
@@ -391,6 +435,22 @@ namespace MPL::AutoCSTonemapping
         for (auto* imageSpace : targets)
         {
             imageSpace->data.hdr.white = kWhitePoint;
+        }
+        {
+            auto& state = GetState();
+            std::scoped_lock lock(state.lock);
+            for (auto& profile : state.profiles)
+            {
+                profile.applied = !profile.suppressed &&
+                                  std::ranges::any_of(
+                                      profileTargets,
+                                      [&](const ProfileTargets& a_targets)
+                                      {
+                                          return EqualsIgnoreCase(
+                                              profile.id,
+                                              a_targets.id);
+                                      });
+            }
         }
         if (filmicCurve)
         {
@@ -402,9 +462,7 @@ namespace MPL::AutoCSTonemapping
             setting->SetFloat(kWhiteScale);
         }
         logger::info(
-            "[Auto CS Tonemapping] Applied white "
-            "0.1 to {} Image Space(s); detected by filmic INI={}, "
-            "existing white point={}",
+            "[Auto CS Tonemapping] targets={} | white=0.1 | filmicINI={} | previousWhite={}",
             targets.size(),
             filmicDetected,
             whitePointDetected);

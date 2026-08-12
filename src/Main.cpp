@@ -17,6 +17,26 @@ namespace
 {
     bool lumaReady = false;
 
+    bool GetAutoCSTonemapping(const char* a_profile)
+    {
+        return a_profile && MPL::AutoCSTonemapping::GetProfileEnabled(a_profile);
+    }
+
+    bool SetAutoCSTonemapping(const char* a_profile, const bool a_enabled)
+    {
+        return a_profile && MPL::AutoCSTonemapping::SetProfileEnabled(a_profile, a_enabled);
+    }
+
+    bool IsAutoCSTonemappingApplied(const char* a_profile)
+    {
+        return a_profile && MPL::AutoCSTonemapping::IsProfileApplied(a_profile);
+    }
+
+    bool SetAutoCSTonemappingSuppressed(const char* a_profile, const bool a_suppressed)
+    {
+        return a_profile && MPL::AutoCSTonemapping::SetProfileSuppressed(a_profile, a_suppressed);
+    }
+
     void OnSKSEMessage(SKSE::MessagingInterface::Message* a_message)
     {
         if (!a_message)
@@ -31,8 +51,7 @@ namespace
                 if (!lumaReady)
                 {
                     logger::critical(
-                        "Heliosphan requires LumaUtil API version {}; "
-                        "Heliosphan will remain inactive",
+                        "[Heliosphan] startup failed | LumaAPI required={}",
                         MPL::LumaAPI::kVersion);
                     break;
                 }
@@ -70,9 +89,7 @@ namespace
                 }
                 else
                 {
-                    logger::warn(
-                        "SKSE task interface is unavailable; Auto CS "
-                        "Tonemapping will run without deferred startup ordering");
+                    logger::warn("[Heliosphan] deferred startup unavailable | Auto CS Tonemapping immediate");
                     MPL::AutoCSTonemapping::ApplyStartup();
                 }
                 break;
@@ -141,6 +158,30 @@ namespace
         .RequestLightPlacerReload = MPL::LightPlacer::RequestReload,
         .RegisterReferenceClient =
             MPL::ExternalEmittance::RegisterReferenceClient,
+        .GetAutoCSTonemapping = GetAutoCSTonemapping,
+        .SetAutoCSTonemapping = SetAutoCSTonemapping,
+        .IsAutoCSTonemappingApplied = IsAutoCSTonemappingApplied,
+        .SetAutoCSTonemappingSuppressed = SetAutoCSTonemappingSuppressed,
+    };
+    const MPL::HeliosphanAPI::Interface legacyV5Api{
+        .version = 5,
+        .SetWeatherInstant = MPL::WeatherRuntime::SetWeatherInstant,
+        .RegisterLightPlacerTransformer =
+            MPL::LightPlacer::RegisterTransformer,
+        .RequestLightPlacerReload = MPL::LightPlacer::RequestReload,
+        .RegisterReferenceClient =
+            MPL::ExternalEmittance::RegisterReferenceClient,
+        .GetAutoCSTonemapping = GetAutoCSTonemapping,
+        .SetAutoCSTonemapping = SetAutoCSTonemapping,
+    };
+    const MPL::HeliosphanAPI::Interface legacyV4Api{
+        .version = 4,
+        .SetWeatherInstant = MPL::WeatherRuntime::SetWeatherInstant,
+        .RegisterLightPlacerTransformer =
+            MPL::LightPlacer::RegisterTransformer,
+        .RequestLightPlacerReload = MPL::LightPlacer::RequestReload,
+        .RegisterReferenceClient =
+            MPL::ExternalEmittance::RegisterReferenceClient,
     };
 }  // namespace
 
@@ -149,16 +190,22 @@ const MPL::HeliosphanAPI::Interface*
 Heliosphan_RequestAPI(
     const std::uint32_t a_version)
 {
-    return a_version == MPL::HeliosphanAPI::kVersion ?
-               std::addressof(api) :
-               nullptr;
+    if (a_version == MPL::HeliosphanAPI::kVersion)
+    {
+        return std::addressof(api);
+    }
+    if (a_version == legacyV5Api.version)
+    {
+        return std::addressof(legacyV5Api);
+    }
+    return a_version == legacyV4Api.version ? std::addressof(legacyV4Api) : nullptr;
 }
 
 SKSEPluginLoad(const SKSE::LoadInterface* a_skse)
 {
     MPL::LifecycleTiming::BeginStartup();
     SKSE::Init(a_skse);
-    logger::info("Game version : {}", a_skse->RuntimeVersion().string());
+    logger::info("[Heliosphan] startup | game={}", a_skse->RuntimeVersion().string());
     SKSE::GetPapyrusInterface()->Register(MPL::Papyrus::Bind);
     SKSE::GetMessagingInterface()->RegisterListener(OnSKSEMessage);
 
