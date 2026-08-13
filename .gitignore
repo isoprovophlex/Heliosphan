@@ -1,4 +1,7 @@
 /build*/
+/.gitignore
+/tests/
+/test-results/
 .vscode*
 .cache
 compile_commands.json

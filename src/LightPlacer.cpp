@@ -33,11 +33,6 @@ namespace MPL::LightPlacer
         constexpr std::size_t kMaxTransformerIDLength = 128;
         constexpr std::size_t kMaxTransformedJsonSize =
             64ULL * 1024ULL * 1024ULL;
-        constexpr std::wstring_view kRecoverySuffix =
-            L".heliosphan-recovery";
-        constexpr std::wstring_view kTemporarySuffix =
-            L".heliosphan-tmp";
-
         struct RegisteredTransformer
         {
             std::string id;
@@ -181,94 +176,6 @@ namespace MPL::LightPlacer
                 static_cast<std::streamsize>(a_content.size()));
             stream.flush();
             return static_cast<bool>(stream);
-        }
-
-        std::filesystem::path RecoveryPath(
-            const std::filesystem::path& a_path)
-        {
-            auto recovery = a_path;
-            recovery += kRecoverySuffix;
-            return recovery;
-        }
-
-        bool WriteFileAtomically(
-            const std::filesystem::path& a_path,
-            const std::string_view a_content)
-        {
-            auto temporary = a_path;
-            temporary += kTemporarySuffix;
-            if (!WriteFile(temporary, a_content))
-            {
-                return false;
-            }
-            if (MoveFileExW(
-                    temporary.c_str(),
-                    a_path.c_str(),
-                    MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
-            {
-                return true;
-            }
-            std::error_code ignored;
-            std::filesystem::remove(temporary, ignored);
-            return false;
-        }
-
-        std::size_t RecoverConfigurationFiles()
-        {
-            std::error_code error;
-            if (!std::filesystem::exists(kConfigDirectory, error))
-            {
-                return 0;
-            }
-            std::size_t recovered = 0;
-            for (std::filesystem::recursive_directory_iterator iterator(
-                     kConfigDirectory,
-                     std::filesystem::directory_options::skip_permission_denied,
-                     error),
-                 end;
-                 iterator != end && !error;
-                 iterator.increment(error))
-            {
-                const auto& entry = *iterator;
-                if (!entry.is_regular_file(error) ||
-                    entry.path().extension().wstring() != kRecoverySuffix)
-                {
-                    continue;
-                }
-                const auto originalContent = ReadFile(entry.path());
-                auto originalPath = entry.path();
-                originalPath.replace_extension();
-                if (!WriteFileAtomically(originalPath, originalContent))
-                {
-                    logger::error(
-                    "{} recovery failed | target='{}' | source='{}'",
-                        kLogPrefix,
-                        originalPath.string(),
-                        entry.path().string());
-                    continue;
-                }
-                std::error_code removeError;
-                std::filesystem::remove(entry.path(), removeError);
-                if (removeError)
-                {
-                    logger::warn(
-                    "{} recovery cleanup failed | target='{}' | journal='{}' | {}",
-                        kLogPrefix,
-                        originalPath.string(),
-                        entry.path().string(),
-                        removeError.message());
-                }
-                ++recovered;
-            }
-            if (error)
-            {
-                configurationFilesComplete = false;
-                logger::error(
-                    "{} recovery scan stopped | {}",
-                    kLogPrefix,
-                    error.message());
-            }
-            return recovered;
         }
 
         std::vector<ConfigurationFile> ReadConfigurationFiles()
@@ -910,17 +817,7 @@ namespace MPL::LightPlacer
                 }
 
                 const auto path = file.path.string();
-                const auto recovery = RecoveryPath(file.path);
-                if (!WriteFileAtomically(recovery, original))
-                {
-                    ++a_stats.fileFailures;
-                    logger::error(
-                "{} recovery journal create failed | file='{}'",
-                        kLogPrefix,
-                        recovery.string());
-                    continue;
-                }
-                if (WriteFileAtomically(file.path, transformed))
+                if (WriteFile(file.path, transformed))
                 {
                     a_backups.emplace(path, original);
                     ++a_stats.filesPatched;
@@ -932,8 +829,6 @@ namespace MPL::LightPlacer
                     "{} temporary write failed | file='{}'",
                         kLogPrefix,
                         path);
-                    std::error_code ignored;
-                    std::filesystem::remove(recovery, ignored);
                 }
             }
         }
@@ -945,27 +840,13 @@ namespace MPL::LightPlacer
             for (const auto& [path, original] : a_backups)
             {
                 const std::filesystem::path originalPath(path);
-                if (!WriteFileAtomically(originalPath, original))
+                if (!WriteFile(originalPath, original))
                 {
                     restored = false;
                     logger::error(
                     "{} restore failed | file='{}'",
                         kLogPrefix,
                         path);
-                    continue;
-                }
-                std::error_code error;
-                const auto recovery = RecoveryPath(originalPath);
-                std::filesystem::remove(recovery, error);
-                if (error)
-                {
-                    restored = false;
-                    logger::warn(
-                    "{} recovery cleanup failed | target='{}' | journal='{}' | {}",
-                        kLogPrefix,
-                        path,
-                        recovery.string(),
-                        error.message());
                 }
             }
             return restored;
@@ -1278,7 +1159,6 @@ namespace MPL::LightPlacer
             configurationFilesOnce,
             []
             {
-                const auto recovered = RecoverConfigurationFiles();
                 auto files = ReadConfigurationFiles();
                 const auto malformed = std::ranges::count_if(
                     files,
@@ -1290,14 +1170,13 @@ namespace MPL::LightPlacer
                 configurationFiles =
                     std::make_shared<const std::vector<ConfigurationFile>>(
                         std::move(files));
-                if (!configurationFiles->empty() || malformed != 0 || recovered != 0)
+                if (!configurationFiles->empty() || malformed != 0)
                 {
                     logger::info(
-                        "{} snapshot | files={} | malformed={} | recovered={}",
+                        "{} snapshot | files={} | malformed={}",
                         kLogPrefix,
                         configurationFiles->size(),
-                        malformed,
-                        recovered);
+                        malformed);
                 }
             });
     }
