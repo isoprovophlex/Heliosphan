@@ -14,6 +14,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 
 namespace MPL::WindowSync
 {
@@ -40,6 +41,10 @@ namespace MPL::WindowSync
             bool startupPreparationStarted = false;
             RE::FormID lastKnownRegion = 0;
             std::optional<PendingTransition> pending;
+            std::unordered_map<
+                RE::FormID,
+                std::vector<Heliosphan::WindowSyncProfile>>
+                alwaysCleanRoomMarkerProfiles;
         };
 
         State& GetState()
@@ -238,19 +243,53 @@ namespace MPL::WindowSync
             RE::TESObjectCELL* a_cell,
             const std::vector<Heliosphan::WindowSyncProfile>& a_profiles)
         {
-            std::vector<std::string> excludedPlugins;
-            bool enabled = false;
-            for (const auto& profile : a_profiles)
+            if (!a_cell)
             {
-                if (!profile.cleanRoomMarkers)
+                return;
+            }
+            std::vector<std::string> excludedPlugins;
+            std::vector<std::string> contributingProfiles;
+            bool enabled = false;
+            const auto contribute =
+                [&](const Heliosphan::WindowSyncProfile& a_profile,
+                    const bool a_requireAlwaysCleanCell)
+            {
+                const bool alwaysCleanCell =
+                    std::ranges::find(
+                        a_profile.roomMarkerAlwaysCleanCells,
+                        a_cell->GetFormID()) !=
+                    a_profile.roomMarkerAlwaysCleanCells.end();
+                if ((a_requireAlwaysCleanCell && !alwaysCleanCell) ||
+                    !HeliosphanLogic::ShouldCleanRoomMarkers(
+                        a_profile.cleanRoomMarkers,
+                        alwaysCleanCell) ||
+                    std::ranges::find(
+                        contributingProfiles,
+                        a_profile.id) != contributingProfiles.end())
                 {
-                    continue;
+                    return;
                 }
                 enabled = true;
+                contributingProfiles.push_back(a_profile.id);
                 excludedPlugins.insert(
                     excludedPlugins.end(),
-                    profile.roomMarkerExcludedPlugins.begin(),
-                    profile.roomMarkerExcludedPlugins.end());
+                    a_profile.roomMarkerExcludedPlugins.begin(),
+                    a_profile.roomMarkerExcludedPlugins.end());
+            };
+            for (const auto& profile : a_profiles)
+            {
+                contribute(profile, false);
+            }
+            const auto forcedProfiles =
+                GetState().alwaysCleanRoomMarkerProfiles.find(
+                    a_cell->GetFormID());
+            if (forcedProfiles !=
+                GetState().alwaysCleanRoomMarkerProfiles.end())
+            {
+                for (const auto& profile : forcedProfiles->second)
+                {
+                    contribute(profile, true);
+                }
             }
             RoomMarkerPatcher::ConfigureCell(
                 a_cell,
@@ -455,12 +494,8 @@ namespace MPL::WindowSync
                     ApplyIndexedCellSettings(a_cell, profile);
                 }
                 ObjectOverrides::ApplyToCell(a_cell, profiles);
-                ApplyRoomMarkerCleaning(a_cell, profiles);
             }
-            else
-            {
-                RoomMarkerPatcher::ConfigureCell(a_cell, false, {});
-            }
+            ApplyRoomMarkerCleaning(a_cell, profiles);
             if (!state.pending || state.pending->destination != a_cell)
             {
                 return;
@@ -610,6 +645,31 @@ namespace MPL::WindowSync
             return prepared;
         }
 
+        void ApplyAlwaysCleanRoomMarkerCells()
+        {
+            auto& alwaysCleanProfiles =
+                GetState().alwaysCleanRoomMarkerProfiles;
+            alwaysCleanProfiles.clear();
+            for (const auto& profile :
+                 Heliosphan::GetWindowSyncProfiles())
+            {
+                for (const auto cellID :
+                     profile.roomMarkerAlwaysCleanCells)
+                {
+                    alwaysCleanProfiles[cellID].push_back(profile);
+                }
+            }
+            for (const auto& [cellID, profiles] :
+                 alwaysCleanProfiles)
+            {
+                if (auto* cell =
+                        RE::TESForm::LookupByID<RE::TESObjectCELL>(cellID))
+                {
+                    ApplyRoomMarkerCleaning(cell, profiles);
+                }
+            }
+        }
+
     }  // namespace
 
     void ProcessReference(RE::TESObjectREFR* a_reference)
@@ -635,6 +695,7 @@ namespace MPL::WindowSync
         state.initializationRequested = true;
         PrepareWindowSyncProfiles();
         ApplyPreparedClassification();
+        ApplyAlwaysCleanRoomMarkerCells();
     }
 
     RE::TESRegion* CaptureSourceRegion()

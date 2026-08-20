@@ -1,6 +1,5 @@
 #pragma once
 
-#include <AutoCSTonemapping.h>
 #include <Heliosphan.h>
 #include <WeatherRuntime.h>
 
@@ -97,23 +96,22 @@ namespace MPL::Papyrus
             "Helios: Could not update HeliosphanSettings.json");
     }
 
-    inline bool GetAutoCSTonemapping(
-        RE::StaticFunctionTag*,
-        std::string a_profile)
+    inline std::string GetCurrentWeatherStatus(
+        RE::StaticFunctionTag*)
     {
-        return AutoCSTonemapping::GetProfileEnabled(a_profile);
+        return Heliosphan::GetCurrentWeatherStatus();
     }
 
-    inline bool SetAutoCSTonemapping(
-        RE::StaticFunctionTag*,
-        std::string a_profile,
-        const bool a_enabled)
+    inline std::string GetCurrentRegionStatus(
+        RE::StaticFunctionTag*)
     {
-        return LogNotificationFailure(
-            AutoCSTonemapping::SetProfileEnabled(
-                a_profile,
-                a_enabled),
-            "Helios: Could not update Helios.json");
+        return Heliosphan::GetCurrentRegionStatus();
+    }
+
+    inline bool IsCurrentHeliosInterior(
+        RE::StaticFunctionTag*)
+    {
+        return Heliosphan::IsCurrentHeliosInterior();
     }
 
     inline bool Bind(RE::BSScript::IVirtualMachine* a_vm)
@@ -147,13 +145,17 @@ namespace MPL::Papyrus
             "Heliosphan",
             SetWeatherSyncSpeedLogging);
         a_vm->RegisterFunction(
-            "GetAutoCSTonemapping",
+            "GetCurrentWeatherStatus",
             "Heliosphan",
-            GetAutoCSTonemapping);
+            GetCurrentWeatherStatus);
         a_vm->RegisterFunction(
-            "SetAutoCSTonemapping",
+            "GetCurrentRegionStatus",
             "Heliosphan",
-            SetAutoCSTonemapping);
+            GetCurrentRegionStatus);
+        a_vm->RegisterFunction(
+            "IsCurrentHeliosInterior",
+            "Heliosphan",
+            IsCurrentHeliosInterior);
         return true;
     }
 }  // namespace MPL::Papyrus

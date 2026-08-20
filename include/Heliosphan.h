@@ -34,6 +34,7 @@ namespace MPL::Heliosphan
         bool usesPluginLoadOrder = false;
         bool synchronizesWeather = false;
         bool cleanRoomMarkers = false;
+        std::vector<std::uint32_t> roomMarkerAlwaysCleanCells;
         std::vector<std::string> roomMarkerExcludedPlugins;
         bool debugLogging = false;
     };
@@ -48,6 +49,9 @@ namespace MPL::Heliosphan
 
     bool IsDetailedLoggingEnabled();
     bool IsSpeedLoggingEnabled();
+    std::string GetCurrentWeatherStatus();
+    std::string GetCurrentRegionStatus();
+    bool IsCurrentHeliosInterior();
     bool GetProfileDetailedLogging(std::string_view a_profile);
     bool GetProfileSpeedLogging(std::string_view a_profile);
     bool GetProfileNotifications(std::string_view a_profile);

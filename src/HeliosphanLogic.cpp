@@ -38,6 +38,18 @@ namespace MPL::HeliosphanLogic
         return !a_hasPluginFilter || a_hasLoadedPlugin;
     }
 
+    bool ShouldCleanRoomMarkers(
+        const bool a_pluginGateActive,
+        const bool a_alwaysCleanCell)
+    {
+        return a_pluginGateActive || a_alwaysCleanCell;
+    }
+
+    bool ShouldApplyAutoCSTonemapping(const bool a_suppressed)
+    {
+        return !a_suppressed;
+    }
+
     bool MatchesCellOriginPlugin(
         const bool a_hasPluginFilter,
         const bool a_hasOriginPlugin,

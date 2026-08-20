@@ -44,6 +44,12 @@ namespace MPL::HeliosphanLogic
         bool a_hasPluginFilter,
         bool a_hasLoadedPlugin);
 
+    bool ShouldCleanRoomMarkers(
+        bool a_pluginGateActive,
+        bool a_alwaysCleanCell);
+
+    bool ShouldApplyAutoCSTonemapping(bool a_suppressed);
+
     bool MatchesCellOriginPlugin(
         bool a_hasPluginFilter,
         bool a_hasOriginPlugin,

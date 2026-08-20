@@ -7,5 +7,6 @@ Bool Function GetWeatherSyncSpeedLogging(String asProfile) global native
 Bool Function SetWeatherSyncDetailedLogging(String asProfile, Bool abEnabled) global native
 Bool Function SetWeatherSyncNotifications(String asProfile, Bool abEnabled) global native
 Bool Function SetWeatherSyncSpeedLogging(String asProfile, Bool abEnabled) global native
-Bool Function GetAutoCSTonemapping(String asProfile) global native
-Bool Function SetAutoCSTonemapping(String asProfile, Bool abEnabled) global native
+String Function GetCurrentWeatherStatus() global native
+String Function GetCurrentRegionStatus() global native
+Bool Function IsCurrentHeliosInterior() global native

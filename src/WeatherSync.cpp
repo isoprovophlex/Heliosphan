@@ -1,6 +1,7 @@
 #include <AutoCSTonemapping.h>
 #include <CellClassifier.h>
 #include <ExternalEmittance.h>
+#include <FormResolver.h>
 #include <LumaClient.h>
 #include <LightPlacer.h>
 #include <LifecycleTiming.h>
@@ -68,6 +69,7 @@ namespace MPL::Heliosphan
             struct RoomMarkerCleaningSettings
             {
                 std::vector<std::string> plugins;
+                std::vector<std::string> Cells;
                 std::vector<std::string> excludedPlugins;
             };
 
@@ -116,7 +118,6 @@ namespace MPL::Heliosphan
         struct PendingProfile
         {
             Settings settings;
-            std::filesystem::path sourcePath;
         };
 
         struct SpeedTiming
@@ -236,6 +237,8 @@ namespace MPL::Heliosphan
             std::vector<PendingProfile> pendingProfiles;
             std::vector<Settings> profiles;
             std::vector<bool> roomMarkerCleaningActive;
+            std::vector<std::vector<RE::FormID>>
+                roomMarkerAlwaysCleanCells;
             std::vector<std::uint32_t> profileLoadOrder;
             std::vector<bool> profileUsesPluginLoadOrder;
             bool profilePrioritiesResolved = false;
@@ -1479,6 +1482,27 @@ namespace MPL::Heliosphan
             { return a_settings.speedLogs; });
     }
 
+    std::string GetCurrentWeatherStatus()
+    {
+        auto* sky = RE::Sky::GetSingleton();
+        auto editorID = GetEditorID(
+            sky ? sky->currentWeather : nullptr);
+        return editorID.empty() ? "<none>" : editorID;
+    }
+
+    std::string GetCurrentRegionStatus()
+    {
+        return CurrentRegionEditorID();
+    }
+
+    bool IsCurrentHeliosInterior()
+    {
+        auto* player = RE::PlayerCharacter::GetSingleton();
+        auto* cell = player ? player->GetParentCell() : nullptr;
+        return cell && cell->IsInteriorCell() &&
+               GetState().cells.contains(cell->GetFormID());
+    }
+
     void BeginCellTiming(RE::TESObjectCELL* a_cell)
     {
         const bool active = a_cell && IsSpeedLoggingEnabled();
@@ -1704,8 +1728,7 @@ namespace MPL::Heliosphan
                 settings.id);
             AutoCSTonemapping::AddProfile(
                 settings.id,
-                settings.autoCSTonemapping,
-                a_pending.sourcePath);
+                settings.autoCSTonemapping);
             LightPlacer::Settings globalLightPlacerSettings{
                 .lights = std::move(
                     settings.emittancePatching.lightPlacer),
@@ -1815,6 +1838,7 @@ namespace MPL::Heliosphan
         state.pendingProfiles.clear();
         state.profiles.clear();
         state.roomMarkerCleaningActive.clear();
+        state.roomMarkerAlwaysCleanCells.clear();
         state.profileLoadOrder.clear();
         state.profileUsesPluginLoadOrder.clear();
         state.profilePrioritiesResolved = false;
@@ -2013,7 +2037,7 @@ namespace MPL::Heliosphan
                 !globalEmittancePatching &&
                 !windowEmittancePatching &&
                 !settings.regionWeatherPatcher.enabled &&
-                !settings.autoCSTonemapping.enabled)
+                settings.autoCSTonemapping.plugins.empty())
             {
                 logger::warn(
                     "[Heliosphan] config={} | active behavior=none",
@@ -2023,7 +2047,6 @@ namespace MPL::Heliosphan
             settings.overrideDurationGameHours = std::max(0.0f, settings.overrideDurationGameHours);
             state.pendingProfiles.push_back(PendingProfile{
                 .settings = std::move(settings),
-                .sourcePath = file,
             });
         }
         logger::info(
@@ -2154,6 +2177,10 @@ namespace MPL::Heliosphan
                 .cleanRoomMarkers =
                     index < state.roomMarkerCleaningActive.size() &&
                     state.roomMarkerCleaningActive[index],
+                .roomMarkerAlwaysCleanCells =
+                    index < state.roomMarkerAlwaysCleanCells.size() ?
+                        state.roomMarkerAlwaysCleanCells[index] :
+                        std::vector<RE::FormID>{},
                 .roomMarkerExcludedPlugins =
                     settings.windowSync.cleanRoomMarkers ?
                         settings.windowSync.cleanRoomMarkers->excludedPlugins :
@@ -2395,7 +2422,9 @@ namespace MPL::Heliosphan
         InstallRuntimeEvents();
         auto& state = GetState();
         ActivatePendingProfiles(state);
+        state.mmsf = MPL::API::MMSF::RequestMMSFAPI();
         state.roomMarkerCleaningActive.assign(state.profiles.size(), false);
+        state.roomMarkerAlwaysCleanCells.resize(state.profiles.size());
         PrepareWindowSyncProfilePriorities();
         auto* dataHandler = RE::TESDataHandler::GetSingleton();
         for (std::size_t index = 0; index < state.profiles.size(); ++index)
@@ -2409,6 +2438,8 @@ namespace MPL::Heliosphan
                 settings.windowSync.cleanRoomMarkers->plugins;
             const auto& excludedPlugins =
                 settings.windowSync.cleanRoomMarkers->excludedPlugins;
+            const auto& configuredCells =
+                settings.windowSync.cleanRoomMarkers->Cells;
             state.roomMarkerCleaningActive[index] = plugins.empty();
             for (const auto& plugin : plugins)
             {
@@ -2421,24 +2452,37 @@ namespace MPL::Heliosphan
                 state.roomMarkerCleaningActive[index] =
                     state.roomMarkerCleaningActive[index] || loaded;
             }
-            if (plugins.empty())
+            auto& resolvedAlwaysCleanCells =
+                state.roomMarkerAlwaysCleanCells[index];
+            for (const auto& selector : configuredCells)
             {
-                logger::info(
-                    "[Room Marker] {} | enabled=true | pluginGates=0 | exclusions={}",
-                    settings.id,
-                    excludedPlugins.size());
+                const auto formID = FormResolver::Resolve(selector);
+                if (!formID ||
+                    !RE::TESForm::LookupByID<RE::TESObjectCELL>(formID))
+                {
+                    logger::warn(
+                        "[Room Marker] {} always cell={} unresolved",
+                        settings.id,
+                        selector);
+                    continue;
+                }
+                resolvedAlwaysCleanCells.push_back(formID);
             }
-            else
-            {
-                logger::info(
-                    "[Room Marker] {} | enabled={} | pluginGates={} | exclusions={}",
-                    settings.id,
-                    static_cast<bool>(state.roomMarkerCleaningActive[index]),
-                    plugins.size(),
-                    excludedPlugins.size());
-            }
+            std::ranges::sort(resolvedAlwaysCleanCells);
+            resolvedAlwaysCleanCells.erase(
+                std::unique(
+                    resolvedAlwaysCleanCells.begin(),
+                    resolvedAlwaysCleanCells.end()),
+                resolvedAlwaysCleanCells.end());
+            logger::info(
+                "[Room Marker] {} | enabled={} | pluginGates={} | cells={}/{} | exclusions={}",
+                settings.id,
+                static_cast<bool>(state.roomMarkerCleaningActive[index]),
+                plugins.size(),
+                resolvedAlwaysCleanCells.size(),
+                configuredCells.size(),
+                excludedPlugins.size());
         }
-        state.mmsf = MPL::API::MMSF::RequestMMSFAPI();
         logger::info(
             "[Heliosphan] init | profiles={} | MMSF={}",
             state.profiles.size(),
