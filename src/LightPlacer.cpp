@@ -3,6 +3,7 @@
 #include <CellClassifier.h>
 #include <FormResolver.h>
 #include <Heliosphan.h>
+#include <HeliosphanLogic.h>
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -12,6 +13,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <memory>
 #include <mutex>
 #include <nlohmann/json.hpp>
 #include <optional>
@@ -31,6 +33,10 @@ namespace MPL::LightPlacer
         constexpr std::size_t kMaxTransformerIDLength = 128;
         constexpr std::size_t kMaxTransformedJsonSize =
             64ULL * 1024ULL * 1024ULL;
+        constexpr std::wstring_view kRecoverySuffix =
+            L".heliosphan-recovery";
+        constexpr std::wstring_view kTemporarySuffix =
+            L".heliosphan-tmp";
 
         struct RegisteredTransformer
         {
@@ -46,15 +52,27 @@ namespace MPL::LightPlacer
             bool filtered = false;
         };
 
+        struct ConfigurationFile
+        {
+            std::filesystem::path path;
+            std::string original;
+            Json document;
+        };
+
         std::mutex brokerLock;
         std::vector<ConfiguredProfile> configuredProfiles;
         std::vector<PatchRule> retainedRules;
         std::vector<RegisteredTransformer> transformers;
         FormSet watchedBases;
+        FormSet watchedReferences;
         bool placementFilterPrepared = false;
         bool placementFilterComplete = true;
         bool startupRulesReady = false;
         bool deferredReload = false;
+        std::once_flag configurationFilesOnce;
+        std::shared_ptr<const std::vector<ConfigurationFile>>
+            configurationFiles;
+        bool configurationFilesComplete = true;
         std::atomic<std::uint64_t> reloadGeneration{ 0 };
 
         struct PatchStats
@@ -65,6 +83,7 @@ namespace MPL::LightPlacer
             std::size_t lightEntriesPatched = 0;
             std::size_t lightEntriesSkippedForMalformedFilters = 0;
             std::size_t referencesPartitioned = 0;
+            std::size_t whitelistFallbackSources = 0;
             std::size_t transformerFailures = 0;
             std::size_t fileFailures = 0;
         };
@@ -80,13 +99,13 @@ namespace MPL::LightPlacer
             return IEquals(a_path.extension().string(), ".json");
         }
 
-        bool LightMatches(
-            const std::string_view a_light,
-            const std::unordered_set<std::string>& a_lights)
+        std::string NormalizeIdentifier(const std::string_view a_value)
         {
-            return std::ranges::any_of(a_lights, [&](const std::string& a_candidate) {
-                return IEquals(a_light, a_candidate);
+            std::string result(a_value);
+            std::ranges::transform(result, result.begin(), [](const unsigned char a_character) {
+                return static_cast<char>(std::tolower(a_character));
             });
+            return result;
         }
 
         std::string DescribeForms(const FormSet& a_forms)
@@ -114,7 +133,7 @@ namespace MPL::LightPlacer
 
         bool SourceUsesConfiguredLight(
             const Json& a_source,
-            const std::vector<std::string>& a_lights)
+            const std::unordered_set<std::string>& a_lights)
         {
             const auto lights = a_source.find("lights");
             if (lights == a_source.end() || !lights->is_array())
@@ -133,14 +152,8 @@ namespace MPL::LightPlacer
                             data->find("light") :
                             data->end();
                     return light != data->end() && light->is_string() &&
-                           std::ranges::any_of(
-                               a_lights,
-                               [&](const std::string& a_configured)
-                               {
-                                   return IEquals(
-                                       light->get_ref<const std::string&>(),
-                                       a_configured);
-                               });
+                           a_lights.contains(NormalizeIdentifier(
+                               light->get_ref<const std::string&>()));
                 });
         }
 
@@ -170,10 +183,145 @@ namespace MPL::LightPlacer
             return static_cast<bool>(stream);
         }
 
+        std::filesystem::path RecoveryPath(
+            const std::filesystem::path& a_path)
+        {
+            auto recovery = a_path;
+            recovery += kRecoverySuffix;
+            return recovery;
+        }
+
+        bool WriteFileAtomically(
+            const std::filesystem::path& a_path,
+            const std::string_view a_content)
+        {
+            auto temporary = a_path;
+            temporary += kTemporarySuffix;
+            if (!WriteFile(temporary, a_content))
+            {
+                return false;
+            }
+            if (MoveFileExW(
+                    temporary.c_str(),
+                    a_path.c_str(),
+                    MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+            {
+                return true;
+            }
+            std::error_code ignored;
+            std::filesystem::remove(temporary, ignored);
+            return false;
+        }
+
+        std::size_t RecoverConfigurationFiles()
+        {
+            std::error_code error;
+            if (!std::filesystem::exists(kConfigDirectory, error))
+            {
+                return 0;
+            }
+            std::size_t recovered = 0;
+            for (std::filesystem::recursive_directory_iterator iterator(
+                     kConfigDirectory,
+                     std::filesystem::directory_options::skip_permission_denied,
+                     error),
+                 end;
+                 iterator != end && !error;
+                 iterator.increment(error))
+            {
+                const auto& entry = *iterator;
+                if (!entry.is_regular_file(error) ||
+                    entry.path().extension().wstring() != kRecoverySuffix)
+                {
+                    continue;
+                }
+                const auto originalContent = ReadFile(entry.path());
+                auto originalPath = entry.path();
+                originalPath.replace_extension();
+                if (!WriteFileAtomically(originalPath, originalContent))
+                {
+                    logger::error(
+                        "{} could not recover '{}' from '{}'",
+                        kLogPrefix,
+                        originalPath.string(),
+                        entry.path().string());
+                    continue;
+                }
+                std::error_code removeError;
+                std::filesystem::remove(entry.path(), removeError);
+                if (removeError)
+                {
+                    logger::warn(
+                        "{} recovered '{}' but could not remove '{}': {}",
+                        kLogPrefix,
+                        originalPath.string(),
+                        entry.path().string(),
+                        removeError.message());
+                }
+                ++recovered;
+            }
+            if (error)
+            {
+                configurationFilesComplete = false;
+                logger::error(
+                    "{} stopped checking recovery files: {}",
+                    kLogPrefix,
+                    error.message());
+            }
+            return recovered;
+        }
+
+        std::vector<ConfigurationFile> ReadConfigurationFiles()
+        {
+            std::vector<ConfigurationFile> files;
+            std::error_code error;
+            if (!std::filesystem::exists(kConfigDirectory, error))
+            {
+                return files;
+            }
+            for (std::filesystem::recursive_directory_iterator iterator(
+                     kConfigDirectory,
+                     std::filesystem::directory_options::skip_permission_denied,
+                     error),
+                 end;
+                 iterator != end && !error;
+                 iterator.increment(error))
+            {
+                const auto& entry = *iterator;
+                if (!entry.is_regular_file(error) ||
+                    !IsJsonFile(entry.path()))
+                {
+                    continue;
+                }
+                auto original = ReadFile(entry.path());
+                files.push_back(ConfigurationFile{
+                    .path = entry.path(),
+                    .original = std::move(original),
+                    .document = Json{},
+                });
+                auto& file = files.back();
+                file.document = Json::parse(
+                    file.original,
+                    nullptr,
+                    false);
+            }
+            if (error)
+            {
+                configurationFilesComplete = false;
+                logger::error(
+                    "{} stopped reading configuration files: {}",
+                    kLogPrefix,
+                    error.message());
+            }
+            return files;
+        }
+
         PlacementList PlacementsForSource(
             const Json& a_source,
-            const PatchRule& a_rule)
+            const PatchRule& a_rule,
+            bool& a_usedWhitelistFallback)
         {
+            a_usedWhitelistFallback = false;
             FormSet sourceForms;
             if (const auto formIDs = a_source.find("formIDs");
                 formIDs != a_source.end() && formIDs->is_array())
@@ -210,13 +358,92 @@ namespace MPL::LightPlacer
                 }
             }
 
-            PlacementList placements;
-            for (const auto& placement : a_rule.placements)
+            std::unordered_set<std::size_t> matches;
+            for (const auto form : sourceForms)
             {
-                if (sourceForms.contains(placement.base) ||
-                    sourceModels.contains(placement.model))
+                if (const auto found = a_rule.placementsByBase.find(form);
+                    found != a_rule.placementsByBase.end())
                 {
-                    placements.push_back(std::addressof(placement));
+                    matches.insert(found->second.begin(), found->second.end());
+                }
+            }
+            for (const auto& model : sourceModels)
+            {
+                if (const auto found = a_rule.placementsByModel.find(model);
+                    found != a_rule.placementsByModel.end())
+                {
+                    matches.insert(found->second.begin(), found->second.end());
+                }
+            }
+
+            std::unordered_set<std::size_t> fallbackMatches;
+            if (matches.empty() && a_rule.filtered && !sourceForms.empty())
+            {
+                if (const auto lights = a_source.find("lights");
+                    lights != a_source.end() && lights->is_array())
+                {
+                    for (const auto& lightEntry : *lights)
+                    {
+                        if (!lightEntry.is_object())
+                        {
+                            continue;
+                        }
+                        const auto data = lightEntry.find("data");
+                        const auto light =
+                            data != lightEntry.end() && data->is_object() ?
+                                data->find("light") :
+                                data->end();
+                        if (light == data->end() || !light->is_string() ||
+                            !a_rule.lights.contains(NormalizeIdentifier(
+                                light->get_ref<const std::string&>())))
+                        {
+                            continue;
+                        }
+                        const auto whiteList = lightEntry.find("whiteList");
+                        if (whiteList == lightEntry.end() ||
+                            !whiteList->is_array())
+                        {
+                            continue;
+                        }
+                        for (const auto& selector : *whiteList)
+                        {
+                            if (!selector.is_string())
+                            {
+                                continue;
+                            }
+                            const auto reference = FormResolver::Resolve(
+                                selector.get_ref<const std::string&>());
+                            if (const auto found =
+                                    a_rule.placementsByReference.find(reference);
+                                reference &&
+                                found != a_rule.placementsByReference.end())
+                            {
+                                fallbackMatches.insert(
+                                    found->second.begin(),
+                                    found->second.end());
+                            }
+                        }
+                    }
+                }
+            }
+            if (HeliosphanLogic::ShouldUseLightPlacerReferenceFallback(
+                    a_rule.filtered,
+                    !sourceForms.empty(),
+                    !matches.empty(),
+                    !fallbackMatches.empty()))
+            {
+                matches = std::move(fallbackMatches);
+                a_usedWhitelistFallback = true;
+            }
+
+            PlacementList placements;
+            placements.reserve(matches.size());
+            for (const auto index : matches)
+            {
+                if (index < a_rule.placements.size())
+                {
+                    placements.push_back(
+                        std::addressof(a_rule.placements[index]));
                 }
             }
             return placements;
@@ -373,8 +600,13 @@ namespace MPL::LightPlacer
             sourcePlacements.reserve(a_rules.size());
             for (const auto& rule : a_rules)
             {
-                sourcePlacements.push_back(
-                    PlacementsForSource(a_source, rule));
+                bool usedWhitelistFallback = false;
+                sourcePlacements.push_back(PlacementsForSource(
+                    a_source,
+                    rule,
+                    usedWhitelistFallback));
+                a_stats.whitelistFallbackSources +=
+                    usedWhitelistFallback ? 1 : 0;
             }
             if (std::ranges::none_of(
                     sourcePlacements,
@@ -409,14 +641,15 @@ namespace MPL::LightPlacer
                     output.push_back(inputLight);
                     continue;
                 }
+                const auto normalizedLight = NormalizeIdentifier(
+                    light->get_ref<const std::string&>());
 
                 bool relevant = false;
                 for (std::size_t index = 0; index < a_rules.size(); ++index)
                 {
                     relevant |= !sourcePlacements[index].empty() &&
-                                LightMatches(
-                                    light->get_ref<const std::string&>(),
-                                    a_rules[index].lights);
+                                a_rules[index].lights.contains(
+                                    normalizedLight);
                 }
                 if (!relevant)
                 {
@@ -437,9 +670,7 @@ namespace MPL::LightPlacer
                 {
                     const auto index = a_rules.size() - 1 - offset;
                     const auto& rule = a_rules[index];
-                    if (!LightMatches(
-                            light->get_ref<const std::string&>(),
-                            rule.lights))
+                    if (!rule.lights.contains(normalizedLight))
                     {
                         continue;
                     }
@@ -611,33 +842,31 @@ namespace MPL::LightPlacer
             PatchStats& a_stats,
             std::unordered_map<std::string, std::string>& a_backups)
         {
-            std::error_code error;
-            if (!std::filesystem::exists(kConfigDirectory, error))
+            InitializeConfigurationFiles();
+            const auto files = configurationFiles;
+            if (!files || files->empty())
             {
                 logger::info(
-                    "{} skipped because Data\\LightPlacer is not installed",
+                    "{} skipped because Data\\LightPlacer has no JSON configuration files",
                     kLogPrefix);
                 return;
             }
 
-            for (std::filesystem::recursive_directory_iterator iterator(
-                     kConfigDirectory,
-                     std::filesystem::directory_options::skip_permission_denied,
-                     error),
-                 end;
-                 iterator != end && !error;
-                 iterator.increment(error))
+            for (const auto& file : *files)
             {
-                const auto& entry = *iterator;
-                if (!entry.is_regular_file(error) ||
-                    !IsJsonFile(entry.path()))
+                ++a_stats.filesScanned;
+                const auto& original = file.original;
+                if (original.empty())
                 {
                     continue;
                 }
-                ++a_stats.filesScanned;
-                const auto original = ReadFile(entry.path());
-                if (original.empty())
+                if (ReadFile(file.path) != original)
                 {
+                    ++a_stats.fileFailures;
+                    logger::warn(
+                        "{} skipped '{}' because it changed after the startup snapshot",
+                        kLogPrefix,
+                        file.path.string());
                     continue;
                 }
 
@@ -646,13 +875,13 @@ namespace MPL::LightPlacer
                 if (!a_rules.empty() &&
                     original.find("externalEmittance") != std::string::npos)
                 {
-                    Json document = Json::parse(original, nullptr, false);
+                    Json document = file.document;
                     if (document.is_discarded() || !document.is_array())
                     {
                         logger::warn(
                             "{} could not parse '{}'; leaving its selective partition unchanged",
                             kLogPrefix,
-                            entry.path().string());
+                            file.path.string());
                     }
                     else
                     {
@@ -674,7 +903,7 @@ namespace MPL::LightPlacer
                 }
 
                 changed |= ApplyTransformers(
-                    entry.path(),
+                    file.path,
                     transformed,
                     a_transformers,
                     a_stats);
@@ -683,8 +912,18 @@ namespace MPL::LightPlacer
                     continue;
                 }
 
-                const auto path = entry.path().string();
-                if (WriteFile(entry.path(), transformed))
+                const auto path = file.path.string();
+                const auto recovery = RecoveryPath(file.path);
+                if (!WriteFileAtomically(recovery, original))
+                {
+                    ++a_stats.fileFailures;
+                    logger::error(
+                        "{} could not create recovery journal '{}'",
+                        kLogPrefix,
+                        recovery.string());
+                    continue;
+                }
+                if (WriteFileAtomically(file.path, transformed))
                 {
                     a_backups.emplace(path, original);
                     ++a_stats.filesPatched;
@@ -696,22 +935,9 @@ namespace MPL::LightPlacer
                         "{} could not write '{}'",
                         kLogPrefix,
                         path);
-                    if (!WriteFile(entry.path(), original))
-                    {
-                        logger::critical(
-                            "{} could not restore '{}' after the temporary write failed",
-                            kLogPrefix,
-                            path);
-                    }
+                    std::error_code ignored;
+                    std::filesystem::remove(recovery, ignored);
                 }
-            }
-            if (error)
-            {
-                ++a_stats.fileFailures;
-                logger::error(
-                    "{} stopped enumerating Data\\LightPlacer: {}",
-                    kLogPrefix,
-                    error.message());
             }
         }
 
@@ -721,13 +947,28 @@ namespace MPL::LightPlacer
             bool restored = true;
             for (const auto& [path, original] : a_backups)
             {
-                if (!WriteFile(path, original))
+                const std::filesystem::path originalPath(path);
+                if (!WriteFileAtomically(originalPath, original))
                 {
                     restored = false;
                     logger::error(
                         "{} could not restore '{}'",
                         kLogPrefix,
                         path);
+                    continue;
+                }
+                std::error_code error;
+                const auto recovery = RecoveryPath(originalPath);
+                std::filesystem::remove(recovery, error);
+                if (error)
+                {
+                    restored = false;
+                    logger::warn(
+                        "{} restored '{}' but could not remove recovery journal '{}': {}",
+                        kLogPrefix,
+                        path,
+                        recovery.string(),
+                        error.message());
                 }
             }
             return restored;
@@ -827,7 +1068,8 @@ namespace MPL::LightPlacer
                             stats.fileFailures == 0;
                 logger::info(
                     "{} combined patch: files={}/{}, transformed files={}, definitions={}, "
-                    "reference targets={}, malformed filtered definitions skipped={}, "
+                    "reference targets={}, whitelist fallback sources={}, "
+                    "malformed filtered definitions skipped={}, "
                     "transformer failures={}, ReloadLP={}, originals restored",
                     kLogPrefix,
                     stats.filesPatched,
@@ -835,6 +1077,7 @@ namespace MPL::LightPlacer
                     stats.filesTransformed,
                     stats.lightEntriesPatched,
                     stats.referencesPartitioned,
+                    stats.whitelistFallbackSources,
                     stats.lightEntriesSkippedForMalformedFilters,
                     stats.transformerFailures,
                     reloaded);
@@ -964,6 +1207,7 @@ namespace MPL::LightPlacer
         configuredProfiles.clear();
         retainedRules.clear();
         watchedBases.clear();
+        watchedReferences.clear();
         placementFilterPrepared = false;
         placementFilterComplete = true;
         startupRulesReady = false;
@@ -981,6 +1225,22 @@ namespace MPL::LightPlacer
         {
             return;
         }
+        std::unordered_set<std::string> normalizedLights;
+        for (const auto& light : a_settings.lights)
+        {
+            auto normalized = NormalizeIdentifier(light);
+            if (!normalized.empty())
+            {
+                normalizedLights.insert(std::move(normalized));
+            }
+        }
+        a_settings.lights.assign(
+            normalizedLights.begin(),
+            normalizedLights.end());
+        if (a_settings.lights.empty())
+        {
+            return;
+        }
         std::scoped_lock lock(brokerLock);
         configuredProfiles.push_back(ConfiguredProfile{
             .id = std::move(a_id),
@@ -992,17 +1252,46 @@ namespace MPL::LightPlacer
     bool RequiresPluginIndex()
     {
         std::scoped_lock lock(brokerLock);
-        return !configuredProfiles.empty();
+        return !configuredProfiles.empty() && configurationFiles &&
+               !configurationFiles->empty();
     }
 
     bool RequiresCompleteInteriorIndex()
     {
         std::scoped_lock lock(brokerLock);
-        return std::ranges::any_of(
+        return configurationFiles && !configurationFiles->empty() &&
+               std::ranges::any_of(
             configuredProfiles,
             [](const ConfiguredProfile& a_profile)
             {
                 return !a_profile.filtered;
+            });
+    }
+
+    void InitializeConfigurationFiles()
+    {
+        std::call_once(
+            configurationFilesOnce,
+            []
+            {
+                const auto recovered = RecoverConfigurationFiles();
+                auto files = ReadConfigurationFiles();
+                const auto malformed = std::ranges::count_if(
+                    files,
+                    [](const ConfigurationFile& a_file)
+                    {
+                        return a_file.document.is_discarded() ||
+                               !a_file.document.is_array();
+                    });
+                configurationFiles =
+                    std::make_shared<const std::vector<ConfigurationFile>>(
+                        std::move(files));
+                logger::info(
+                    "{} configuration snapshot prepared: files={}, malformed files={}, recovered transactions={}",
+                    kLogPrefix,
+                    configurationFiles->size(),
+                    malformed,
+                    recovered);
             });
     }
 
@@ -1012,44 +1301,36 @@ namespace MPL::LightPlacer
         {
             return;
         }
-        std::vector<std::string> configuredLights;
+        InitializeConfigurationFiles();
+        std::unordered_set<std::string> configuredLights;
+        std::unordered_set<std::string> filteredLights;
         {
             std::scoped_lock lock(brokerLock);
             for (const auto& profile : configuredProfiles)
             {
                 configuredLights.insert(
-                    configuredLights.end(),
                     profile.settings.lights.begin(),
                     profile.settings.lights.end());
+                if (profile.filtered)
+                {
+                    filteredLights.insert(
+                        profile.settings.lights.begin(),
+                        profile.settings.lights.end());
+                }
             }
         }
 
         FormSet formSources;
+        FormSet referenceSources;
         std::unordered_set<std::string> modelSources;
         std::size_t filesScanned = 0;
         std::size_t malformedFiles = 0;
-        std::error_code error;
-        if (!configuredLights.empty() &&
-            std::filesystem::exists(kConfigDirectory, error))
+        if (!configuredLights.empty() && configurationFiles)
         {
-            for (std::filesystem::recursive_directory_iterator iterator(
-                     kConfigDirectory,
-                     std::filesystem::directory_options::skip_permission_denied,
-                     error),
-                 end;
-                 iterator != end && !error;
-                 iterator.increment(error))
+            for (const auto& file : *configurationFiles)
             {
-                const auto& entry = *iterator;
-                if (!entry.is_regular_file(error) ||
-                    !IsJsonFile(entry.path()))
-                {
-                    continue;
-                }
                 ++filesScanned;
-                const auto content = ReadFile(entry.path());
-                const auto document =
-                    Json::parse(content, nullptr, false);
+                const auto& document = file.document;
                 if (document.is_discarded() || !document.is_array())
                 {
                     ++malformedFiles;
@@ -1062,6 +1343,7 @@ namespace MPL::LightPlacer
                     {
                         continue;
                     }
+                    bool hasResolvedFormSource = false;
                     if (const auto formIDs = source.find("formIDs");
                         formIDs != source.end() && formIDs->is_array())
                     {
@@ -1077,6 +1359,7 @@ namespace MPL::LightPlacer
                                 if (form && form->Is(RE::FormType::Static))
                                 {
                                     formSources.insert(formID);
+                                    hasResolvedFormSource = true;
                                 }
                             }
                         }
@@ -1097,12 +1380,63 @@ namespace MPL::LightPlacer
                             }
                         }
                     }
+                    if (hasResolvedFormSource && !filteredLights.empty())
+                    {
+                        const auto lights = source.find("lights");
+                        if (lights != source.end() && lights->is_array())
+                        {
+                            for (const auto& lightEntry : *lights)
+                            {
+                                if (!lightEntry.is_object())
+                                {
+                                    continue;
+                                }
+                                const auto data = lightEntry.find("data");
+                                const auto light =
+                                    data != lightEntry.end() &&
+                                            data->is_object() ?
+                                        data->find("light") :
+                                        data->end();
+                                if (light == data->end() ||
+                                    !light->is_string() ||
+                                    !filteredLights.contains(
+                                        NormalizeIdentifier(
+                                            light->get_ref<
+                                                const std::string&>())))
+                                {
+                                    continue;
+                                }
+                                const auto whiteList =
+                                    lightEntry.find("whiteList");
+                                if (whiteList == lightEntry.end() ||
+                                    !whiteList->is_array())
+                                {
+                                    continue;
+                                }
+                                for (const auto& selector : *whiteList)
+                                {
+                                    if (selector.is_string())
+                                    {
+                                        const auto reference =
+                                            FormResolver::Resolve(
+                                                selector.get_ref<
+                                                    const std::string&>());
+                                        if (reference)
+                                        {
+                                            referenceSources.insert(reference);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
-        placementFilterComplete = !error;
+        placementFilterComplete = configurationFilesComplete;
         const auto sourceFormCount = formSources.size();
         watchedBases = std::move(formSources);
+        watchedReferences = std::move(referenceSources);
         if (auto* dataHandler = RE::TESDataHandler::GetSingleton())
         {
             for (const auto* base :
@@ -1118,13 +1452,14 @@ namespace MPL::LightPlacer
         }
         placementFilterPrepared = true;
         logger::info(
-            "{} placement filter prepared: files={}, malformed files={}, source forms={}, source models={}, watched bases={}, complete={}",
+            "{} placement filter prepared: files={}, malformed files={}, source forms={}, source models={}, watched bases={}, watched references={}, complete={}",
             kLogPrefix,
             filesScanned,
             malformedFiles,
             sourceFormCount,
             modelSources.size(),
             watchedBases.size(),
+            watchedReferences.size(),
             placementFilterComplete);
     }
 
@@ -1135,6 +1470,10 @@ namespace MPL::LightPlacer
         if (!placementFilterPrepared)
         {
             return false;
+        }
+        if (a_reference && watchedReferences.contains(a_reference))
+        {
+            return true;
         }
         if (!placementFilterComplete)
         {
@@ -1213,6 +1552,7 @@ namespace MPL::LightPlacer
                     profile.settings.lights.end()),
                 .externalEmittance =
                     profile.settings.externalEmittance,
+                .filtered = profile.filtered,
             };
             for (const auto& [referenceID, placement] : a_index.placements)
             {
@@ -1268,6 +1608,18 @@ namespace MPL::LightPlacer
                     source.filterIDs.push_back(location->GetFormID());
                 }
                 rule.placements.push_back(std::move(source));
+            }
+            for (std::size_t index = 0;
+                 index < rule.placements.size();
+                 ++index)
+            {
+                const auto& placement = rule.placements[index];
+                rule.placementsByReference[placement.reference].push_back(index);
+                rule.placementsByBase[placement.base].push_back(index);
+                if (!placement.model.empty())
+                {
+                    rule.placementsByModel[placement.model].push_back(index);
+                }
             }
             if (!rule.placements.empty())
             {

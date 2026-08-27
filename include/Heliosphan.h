@@ -26,6 +26,7 @@ namespace MPL::Heliosphan
         std::string id;
         std::string regionPrefix;
         std::string fallbackRegion;
+        const std::map<std::string, std::string>* regionOverrides = nullptr;
         std::optional<bool> showSky;
         std::optional<bool> useSkyLighting;
         std::optional<bool> sunlightShadows;

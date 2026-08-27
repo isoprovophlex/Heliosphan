@@ -11,6 +11,7 @@
 #include <WeatherRuntime.h>
 #include <Heliosphan.h>
 #include <HeliosphanLogic.h>
+#include <InlineTaskQueue.h>
 #include <WindowSync.h>
 #include <yyjson.h>
 #include <algorithm>
@@ -50,7 +51,7 @@ namespace MPL::Heliosphan
         constexpr auto kReadinessPollInterval = 16ms;
         constexpr std::uint32_t kMaxReadinessPollAttempts = 1000;
         constexpr auto kSkyUpdateWatchdogDelay = 2s;
-        constexpr auto kExpirationPoll = 1000ms;
+        constexpr auto kExpirationPoll = 15s;
         constexpr auto kCurrentWeatherNotificationDelay = 2s;
         constexpr auto kNotificationDurationAdjustmentDelay = 100ms;
         constexpr float kWeatherTransitionSelectionThreshold = 0.5f;
@@ -87,11 +88,13 @@ namespace MPL::Heliosphan
             std::string fallbackWeather;
             std::string regionPrefix;
             std::string fallbackRegion;
+            std::map<std::string, std::string> regionOverrides;
         };
 
         struct Settings
         {
             std::string id;
+            std::vector<std::string> plugins;
             std::string plugin;
             std::string cellPatchProvider;
             float overrideDurationGameHours = 3.0f;
@@ -108,6 +111,12 @@ namespace MPL::Heliosphan
                 compiledGlobalOverrides;
             rfl::Skip<std::map<std::string, std::string>>
                 compiledWindowOverrides;
+        };
+
+        struct PendingProfile
+        {
+            Settings settings;
+            std::filesystem::path sourcePath;
         };
 
         struct SpeedTiming
@@ -144,6 +153,27 @@ namespace MPL::Heliosphan
             std::optional<bool> speedLogs;
             std::optional<bool> notifications;
         };
+
+        InlineTaskQueue& GetRuntimeTaskQueue()
+        {
+            static InlineTaskQueue queue;
+            return queue;
+        }
+
+        bool QueueRuntimeTask(InlineTaskQueue::Task a_task)
+        {
+            auto* taskInterface = SKSE::GetTaskInterface();
+            if (!taskInterface)
+            {
+                return false;
+            }
+            taskInterface->AddTask(
+                [task = std::move(a_task)]() mutable
+                {
+                    GetRuntimeTaskQueue().Submit(std::move(task));
+                });
+            return true;
+        }
 
         class Scheduler
         {
@@ -190,10 +220,7 @@ namespace MPL::Heliosphan
                     auto task = std::move(tasks.begin()->second);
                     tasks.erase(tasks.begin());
                     lock.unlock();
-                    if (auto* taskInterface = SKSE::GetTaskInterface())
-                    {
-                        taskInterface->AddTask(std::move(task));
-                    }
+                    QueueRuntimeTask(std::move(task));
                     lock.lock();
                 }
             }
@@ -206,6 +233,7 @@ namespace MPL::Heliosphan
 
         struct State
         {
+            std::vector<PendingProfile> pendingProfiles;
             std::vector<Settings> profiles;
             std::vector<bool> roomMarkerCleaningActive;
             std::vector<std::uint32_t> profileLoadOrder;
@@ -235,6 +263,19 @@ namespace MPL::Heliosphan
             return state;
         }
 
+        std::atomic_uint64_t publishedGeneration{ 0 };
+        std::atomic_bool runtimeDispatchWarningLogged{ false };
+        std::mutex speedTimingLock;
+
+        std::uint64_t AdvanceGeneration(State& a_state)
+        {
+            const auto generation = ++a_state.generation;
+            publishedGeneration.store(
+                generation,
+                std::memory_order_release);
+            return generation;
+        }
+
         double ElapsedMilliseconds(
             const std::chrono::steady_clock::time_point a_started)
         {
@@ -247,6 +288,7 @@ namespace MPL::Heliosphan
 
         void ResetSpeedTiming()
         {
+            std::scoped_lock lock(speedTimingLock);
             GetState().speedTiming = {};
         }
 
@@ -254,6 +296,7 @@ namespace MPL::Heliosphan
             RE::TESObjectCELL* a_cell,
             const std::uint64_t a_generation)
         {
+            std::scoped_lock lock(speedTimingLock);
             auto& timing = GetState().speedTiming;
             if (timing.active && a_cell &&
                 timing.cell == a_cell->GetFormID())
@@ -264,6 +307,7 @@ namespace MPL::Heliosphan
 
         void FinishSpeedTiming(const std::uint64_t a_generation)
         {
+            std::scoped_lock lock(speedTimingLock);
             auto& timing = GetState().speedTiming;
             if (!timing.active ||
                 (a_generation && timing.generation != a_generation))
@@ -280,8 +324,6 @@ namespace MPL::Heliosphan
             }
             timing = {};
         }
-
-        std::atomic_uint32_t cellChangeThreadID{ 0 };
 
         Scheduler& GetScheduler()
         {
@@ -301,26 +343,45 @@ namespace MPL::Heliosphan
                 const RE::TESCellFullyLoadedEvent* a_event,
                 RE::BSTEventSource<RE::TESCellFullyLoadedEvent>*) override
             {
-                if (!a_event || !a_event->cell ||
-                    cellChangeThreadID.load(std::memory_order_relaxed) !=
-                        GetCurrentThreadId())
+                if (!a_event || !a_event->cell)
                 {
                     return RE::BSEventNotifyControl::kContinue;
                 }
-
-                auto& state = GetState();
-                const auto cell = a_event->cell;
-                auto* player = RE::PlayerCharacter::GetSingleton();
-                const bool matchesGameLoad =
-                    state.gameLoadPending && player &&
-                    player->GetParentCell() == cell;
-                const bool matchesTransition =
-                    state.pendingSource && state.pendingCell == cell;
-                if (matchesGameLoad || matchesTransition)
+                const auto cellID = a_event->cell->GetFormID();
+                const auto generation = publishedGeneration.load(
+                    std::memory_order_acquire);
+                if (!QueueRuntimeTask(
+                        [cellID, generation]
+                        {
+                            auto& state = GetState();
+                            auto* player =
+                                RE::PlayerCharacter::GetSingleton();
+                            const auto* playerCell =
+                                player ? player->GetParentCell() : nullptr;
+                            if (HeliosphanLogic::ShouldAcceptLoadedCellEvent(
+                                    cellID,
+                                    playerCell ?
+                                        playerCell->GetFormID() :
+                                        0,
+                                    state.pendingCell ?
+                                        state.pendingCell->GetFormID() :
+                                        0,
+                                    generation,
+                                    state.generation,
+                                    state.gameLoadPending,
+                                    state.pendingSource != nullptr))
+                            {
+                                ProcessEngineReadyWork(
+                                    generation,
+                                    true);
+                            }
+                        }) &&
+                    !runtimeDispatchWarningLogged.exchange(
+                        true,
+                        std::memory_order_acq_rel))
                 {
-                    ProcessEngineReadyWork(
-                        state.generation,
-                        true);
+                    logger::warn(
+                        "[Weather Sync] Could not queue a loaded-cell readiness event because the SKSE task interface is unavailable; polling remains active");
                 }
                 return RE::BSEventNotifyControl::kContinue;
             }
@@ -1107,11 +1168,19 @@ namespace MPL::Heliosphan
             const bool a_requireRegion)
         {
             auto* player = RE::PlayerCharacter::GetSingleton();
-            if (!player || player->GetParentCell() != a_cell)
+            if (!player)
+            {
+                return "the player is unavailable";
+            }
+            if (!a_cell)
+            {
+                return "the destination cell is unavailable";
+            }
+            if (player->GetParentCell() != a_cell)
             {
                 return "the player parent cell does not match the destination";
             }
-            if (!a_cell || !a_cell->IsAttached())
+            if (!a_cell->IsAttached())
             {
                 return "the destination cell is not attached";
             }
@@ -1198,14 +1267,22 @@ namespace MPL::Heliosphan
                     (player ? player->GetParentCell() : nullptr) :
                     state.pendingCell;
             const auto issue = CellReadinessIssue(cell, true);
-            ++state.readinessPollAttempts;
+            const bool budgetActive =
+                HeliosphanLogic::IsReadinessBudgetActive(
+                    state.gameLoadPending,
+                    cell != nullptr);
+            if (budgetActive)
+            {
+                ++state.readinessPollAttempts;
+            }
             if (issue.empty())
             {
                 ProcessEngineReadyWork(
                     a_generation,
                     true);
             }
-            else if (state.readinessPollAttempts >=
+            else if (budgetActive &&
+                     state.readinessPollAttempts >=
                      kMaxReadinessPollAttempts)
             {
                 logger::error(
@@ -1214,7 +1291,7 @@ namespace MPL::Heliosphan
                     a_generation,
                     state.readinessPollAttempts,
                     issue);
-                ++state.generation;
+                AdvanceGeneration(state);
                 state.gameLoadPending = false;
                 ObjectOverrides::Patches::CompleteGameLoad(nullptr);
                 ExternalEmittance::ReplayCell(nullptr);
@@ -1251,6 +1328,18 @@ namespace MPL::Heliosphan
             if (a_generation != state.generation ||
                 (!state.gameLoadPending && !state.pendingSource))
             {
+                return;
+            }
+
+            auto* player = RE::PlayerCharacter::GetSingleton();
+            if (!HeliosphanLogic::IsReadinessBudgetActive(
+                    state.gameLoadPending,
+                    player && player->GetParentCell()))
+            {
+                GetScheduler().Schedule(
+                    kSkyUpdateWatchdogDelay,
+                    [a_generation]
+                    { RunReadinessWatchdog(a_generation); });
                 return;
             }
 
@@ -1291,7 +1380,7 @@ namespace MPL::Heliosphan
             bool a_usedDefaultWeather)
         {
             auto& state = GetState();
-            const auto generation = ++state.generation;
+            const auto generation = AdvanceGeneration(state);
             state.pendingProfile = a_destinationProfile;
             state.pendingSource = a_sourceWeather;
             state.pendingCell = a_destinationCell;
@@ -1342,29 +1431,45 @@ namespace MPL::Heliosphan
 
     void BeginCellTiming(RE::TESObjectCELL* a_cell)
     {
-        ResetSpeedTiming();
-        if (!a_cell || !IsSpeedLoggingEnabled())
+        const bool active = a_cell && IsSpeedLoggingEnabled();
+        const auto cellID = active ? a_cell->GetFormID() : 0;
+        {
+            std::scoped_lock lock(speedTimingLock);
+            auto& timing = GetState().speedTiming;
+            timing = {};
+            if (active)
+            {
+                timing.cellStarted = std::chrono::steady_clock::now();
+                timing.cell = cellID;
+                timing.active = true;
+            }
+        }
+        if (!active)
         {
             return;
         }
-        auto& timing = GetState().speedTiming;
-        timing.cellStarted = std::chrono::steady_clock::now();
-        timing.cell = a_cell->GetFormID();
-        timing.active = true;
         logger::info(
             "[Cell Timing] cell={:08X} component=Heliosphan stage=start",
-            timing.cell);
+            cellID);
     }
 
     void FinishCellTiming(RE::TESObjectCELL* a_cell)
     {
+        std::scoped_lock lock(speedTimingLock);
         auto& timing = GetState().speedTiming;
         if (!timing.active || !a_cell ||
             timing.cell != a_cell->GetFormID() || timing.generation != 0)
         {
             return;
         }
-        FinishSpeedTiming(0);
+        if (IsSpeedLoggingEnabled())
+        {
+            logger::info(
+                "[Cell Timing] cell={:08X} component=Heliosphan stage=finish last=cell change total={:.3f} ms",
+                timing.cell,
+                ElapsedMilliseconds(timing.cellStarted));
+        }
+        timing = {};
     }
 
     bool GetProfileDetailedLogging(const std::string_view a_profile)
@@ -1497,9 +1602,165 @@ namespace MPL::Heliosphan
         return true;
     }
 
+    namespace
+    {
+        const RE::TESFile* LookupLoadedPlugin(
+            RE::TESDataHandler* a_dataHandler,
+            const std::string_view a_plugin)
+        {
+            if (!a_dataHandler || a_plugin.empty())
+            {
+                return nullptr;
+            }
+            if (const auto* plugin =
+                    a_dataHandler->LookupLoadedModByName(a_plugin))
+            {
+                return plugin;
+            }
+            return a_dataHandler->LookupLoadedLightModByName(a_plugin);
+        }
+
+        bool HasPluginFilter(const Settings& a_settings)
+        {
+            return std::ranges::any_of(
+                a_settings.plugins,
+                [](const std::string& a_plugin)
+                {
+                    return !a_plugin.empty();
+                });
+        }
+
+        bool HasLoadedPlugin(
+            const Settings& a_settings,
+            RE::TESDataHandler* a_dataHandler)
+        {
+            return std::ranges::any_of(
+                a_settings.plugins,
+                [&](const std::string& a_plugin)
+                {
+                    return LookupLoadedPlugin(
+                               a_dataHandler,
+                               a_plugin) != nullptr;
+                });
+        }
+
+        void RegisterProfile(
+            State& a_state,
+            PendingProfile a_pending)
+        {
+            auto& settings = a_pending.settings;
+            logger::info("[Heliosphan] Loaded profile '{}'", settings.id);
+            AutoCSTonemapping::AddProfile(
+                settings.id,
+                settings.autoCSTonemapping,
+                a_pending.sourcePath);
+            LightPlacer::Settings globalLightPlacerSettings{
+                .lights = std::move(
+                    settings.emittancePatching.lightPlacer),
+                .externalEmittance =
+                    settings.emittancePatching.emmitance,
+            };
+            LightPlacer::AddProfile(
+                settings.id,
+                std::move(globalLightPlacerSettings),
+                false);
+            LightPlacer::Settings windowLightPlacerSettings{
+                .lights = std::move(
+                    settings.windowSync.emittancePatching.lightPlacer),
+                .externalEmittance =
+                    settings.windowSync.emittancePatching.emmitance,
+            };
+            LightPlacer::AddProfile(
+                settings.id,
+                std::move(windowLightPlacerSettings),
+                true);
+            const auto globalFormPatchingTarget =
+                settings.emittancePatching.Forms.empty() ?
+                    std::string{} :
+                    settings.emittancePatching.emmitance;
+            ExternalEmittance::Settings globalEmittanceSettings{
+                .forms = std::move(settings.emittancePatching.Forms),
+                .target = globalFormPatchingTarget,
+            };
+            ExternalEmittance::AddProfile(
+                settings.id,
+                std::move(globalEmittanceSettings),
+                false,
+                settings.detailedLogging);
+            const auto windowFormPatchingTarget =
+                settings.windowSync.emittancePatching.Forms.empty() ?
+                    std::string{} :
+                    settings.windowSync.emittancePatching.emmitance;
+            ExternalEmittance::Settings windowEmittanceSettings{
+                .forms = std::move(
+                    settings.windowSync.emittancePatching.Forms),
+                .target = windowFormPatchingTarget,
+                .cellContainsTarget =
+                    settings.windowSync.cellContains ?
+                        settings.windowSync.cellContains->emittance :
+                        std::string{},
+            };
+            ExternalEmittance::AddProfile(
+                settings.id,
+                std::move(windowEmittanceSettings),
+                true,
+                settings.detailedLogging);
+            for (std::size_t index = 0;
+                 index < settings.objects.size();
+                 ++index)
+            {
+                ObjectOverrides::Patches::AddGroup(
+                    settings.id,
+                    std::format(
+                        "{}:objects[{}]",
+                        settings.id,
+                        index + 1),
+                    std::move(settings.objects[index]));
+            }
+            if (settings.windowSync.enabled &&
+                settings.windowSync.cellContains)
+            {
+                CellClassifier::AddRule(
+                    settings.id,
+                    *settings.windowSync.cellContains,
+                    settings.detailedLogging);
+            }
+            a_state.profiles.push_back(std::move(settings));
+        }
+
+        void ActivatePendingProfiles(State& a_state)
+        {
+            auto pendingProfiles = std::move(a_state.pendingProfiles);
+            a_state.pendingProfiles.clear();
+            auto* dataHandler = RE::TESDataHandler::GetSingleton();
+            for (auto& pending : pendingProfiles)
+            {
+                const bool hasPluginFilter =
+                    HasPluginFilter(pending.settings);
+                const bool hasLoadedPlugin =
+                    HasLoadedPlugin(pending.settings, dataHandler);
+                if (!HeliosphanLogic::ShouldActivateProfileForPlugins(
+                        hasPluginFilter,
+                        hasLoadedPlugin))
+                {
+                    logger::info(
+                        "[Heliosphan] Profile '{}' disabled because none of its {} top-level plugin gate(s) are loaded",
+                        pending.settings.id,
+                        pending.settings.plugins.size());
+                    continue;
+                }
+                RegisterProfile(a_state, std::move(pending));
+            }
+            logger::info(
+                "[Heliosphan] Configuration activation finished with {} active profile(s)",
+                a_state.profiles.size());
+        }
+    }  // namespace
+
     void LoadConfiguration()
     {
         auto& state = GetState();
+        state.pendingProfiles.clear();
         state.profiles.clear();
         state.roomMarkerCleaningActive.clear();
         state.profileLoadOrder.clear();
@@ -1552,17 +1813,17 @@ namespace MPL::Heliosphan
             auto settings = parsed.value();
             if (settings.id.empty()) settings.id = file.stem().string();
             if (std::ranges::any_of(
-                    state.profiles,
-                    [&](const Settings& a_existing)
+                    state.pendingProfiles,
+                    [&](const PendingProfile& a_existing)
                     {
                         return EqualsIgnoreCase(
-                            a_existing.id,
+                            a_existing.settings.id,
                             settings.id);
                     }))
             {
                 logger::warn(
                     "[Heliosphan] Skipping configuration {} because profile ID '{}' "
-                    "is already loaded",
+                    "is already configured",
                     file.string(),
                     settings.id);
                 continue;
@@ -1713,85 +1974,17 @@ namespace MPL::Heliosphan
                 continue;
             }
             settings.overrideDurationGameHours = std::max(0.0f, settings.overrideDurationGameHours);
-            logger::info("[Heliosphan] Loaded profile '{}'", settings.id);
-            AutoCSTonemapping::AddProfile(
-                settings.id,
-                settings.autoCSTonemapping,
-                file);
-            LightPlacer::Settings globalLightPlacerSettings{
-                .lights = std::move(
-                    settings.emittancePatching.lightPlacer),
-                .externalEmittance =
-                    settings.emittancePatching.emmitance,
-            };
-            LightPlacer::AddProfile(
-                settings.id,
-                std::move(globalLightPlacerSettings),
-                false);
-            LightPlacer::Settings windowLightPlacerSettings{
-                .lights = std::move(
-                    settings.windowSync.emittancePatching.lightPlacer),
-                .externalEmittance =
-                    settings.windowSync.emittancePatching.emmitance,
-            };
-            LightPlacer::AddProfile(
-                settings.id,
-                std::move(windowLightPlacerSettings),
-                true);
-            const auto globalFormPatchingTarget =
-                settings.emittancePatching.Forms.empty() ?
-                    std::string{} :
-                    settings.emittancePatching.emmitance;
-            ExternalEmittance::Settings globalEmittanceSettings{
-                .forms = std::move(settings.emittancePatching.Forms),
-                .target = globalFormPatchingTarget,
-            };
-            ExternalEmittance::AddProfile(
-                settings.id,
-                std::move(globalEmittanceSettings),
-                false,
-                settings.detailedLogging);
-            const auto windowFormPatchingTarget =
-                settings.windowSync.emittancePatching.Forms.empty() ?
-                    std::string{} :
-                    settings.windowSync.emittancePatching.emmitance;
-            ExternalEmittance::Settings windowEmittanceSettings{
-                .forms = std::move(
-                    settings.windowSync.emittancePatching.Forms),
-                .target = windowFormPatchingTarget,
-                .cellContainsTarget =
-                    settings.windowSync.cellContains ?
-                        settings.windowSync.cellContains->emittance :
-                        std::string{},
-            };
-            ExternalEmittance::AddProfile(
-                settings.id,
-                std::move(windowEmittanceSettings),
-                true,
-                settings.detailedLogging);
-            for (std::size_t index = 0;
-                 index < settings.objects.size();
-                 ++index)
-            {
-                ObjectOverrides::Patches::AddGroup(
-                    settings.id,
-                    std::format(
-                        "{}:objects[{}]",
-                        settings.id,
-                        index + 1),
-                    std::move(settings.objects[index]));
-            }
-            if (settings.windowSync.enabled &&
-                settings.windowSync.cellContains)
-            {
-                CellClassifier::AddRule(
-                    settings.id,
-                    *settings.windowSync.cellContains,
-                    settings.detailedLogging);
-            }
-            state.profiles.push_back(std::move(settings));
+            logger::info(
+                "[Heliosphan] Parsed profile '{}'",
+                settings.id);
+            state.pendingProfiles.push_back(PendingProfile{
+                .settings = std::move(settings),
+                .sourcePath = file,
+            });
         }
-        logger::info("[Heliosphan] Configuration loading finished with {} active profile(s)", state.profiles.size());
+        logger::info(
+            "[Heliosphan] Configuration parsing finished with {} candidate profile(s)",
+            state.pendingProfiles.size());
     }
 
     void RecordCellPatch(
@@ -1900,6 +2093,8 @@ namespace MPL::Heliosphan
                 .id = settings.id,
                 .regionPrefix = settings.weatherSync.regionPrefix,
                 .fallbackRegion = settings.weatherSync.fallbackRegion,
+                .regionOverrides =
+                    std::addressof(settings.weatherSync.regionOverrides),
                 .showSky = settings.windowSync.showSky,
                 .useSkyLighting = settings.windowSync.useSkyLighting,
                 .sunlightShadows = settings.windowSync.sunlightShadows,
@@ -2029,14 +2224,11 @@ namespace MPL::Heliosphan
         return sky->currentWeather ? sky->currentWeather : sky->lastWeather;
     }
 
-    void OnCellChanged(
+    void ProcessCellChanged(
         const RE::TESObjectCELL* a_cell,
         RE::TESWeather* a_sourceWeather,
         const bool a_usedDefaultRegion)
     {
-        cellChangeThreadID.store(
-            GetCurrentThreadId(),
-            std::memory_order_relaxed);
         auto& state = GetState();
         const bool wasGameLoadPending = state.gameLoadPending;
         state.gameLoadPending = false;
@@ -2097,7 +2289,7 @@ namespace MPL::Heliosphan
         }
         if (!a_sourceWeather)
         {
-            ++state.generation;
+            AdvanceGeneration(state);
             if (!destination)
             {
                 const auto releaseProfile = state.activeProfile;
@@ -2138,10 +2330,26 @@ namespace MPL::Heliosphan
             usedDefaultWeather);
     }
 
+    void OnCellChanged(
+        const RE::TESObjectCELL* a_cell,
+        RE::TESWeather* a_sourceWeather,
+        const bool a_usedDefaultRegion)
+    {
+        GetRuntimeTaskQueue().Submit(
+            [a_cell, a_sourceWeather, a_usedDefaultRegion]
+            {
+                ProcessCellChanged(
+                    a_cell,
+                    a_sourceWeather,
+                    a_usedDefaultRegion);
+            });
+    }
+
     void OnDataLoaded()
     {
         InstallRuntimeEvents();
         auto& state = GetState();
+        ActivatePendingProfiles(state);
         state.roomMarkerCleaningActive.assign(state.profiles.size(), false);
         PrepareWindowSyncProfilePriorities();
         auto* dataHandler = RE::TESDataHandler::GetSingleton();
@@ -2161,7 +2369,10 @@ namespace MPL::Heliosphan
             {
                 const bool loaded =
                     dataHandler && !plugin.empty() &&
-                    dataHandler->LookupLoadedModByName(plugin) != nullptr;
+                    HeliosphanLogic::IsPluginLoaded(
+                        dataHandler->LookupLoadedModByName(plugin) != nullptr,
+                        dataHandler->LookupLoadedLightModByName(plugin) !=
+                            nullptr);
                 state.roomMarkerCleaningActive[index] =
                     state.roomMarkerCleaningActive[index] || loaded;
             }
@@ -2204,6 +2415,8 @@ namespace MPL::Heliosphan
                 "[Weather Sync] Weather and region synchronization disabled because the "
                 "MMSF API is unavailable; Object Overrides and non-region Window Sync layers remain active");
         }
+        LifecycleTiming::BeginStartupPhase(
+            LifecycleTiming::StartupPhase::RegionPatching);
         if (state.mmsf)
         {
             for (const auto& settings : state.profiles)
@@ -2217,29 +2430,39 @@ namespace MPL::Heliosphan
                     settings.detailedLogging);
             }
         }
+        LifecycleTiming::FinishStartupPhase(
+            LifecycleTiming::StartupPhase::RegionPatching);
         ObjectOverrides::Patches::Initialize();
     }
 
     void OnGameLoaded()
     {
-        auto& state = GetState();
-        state.gameLoadPending = true;
-        state.readinessPollAttempts = 0;
-        const auto generation = state.generation;
-        ScheduleReadinessPoll(generation);
-        ScheduleReadinessWatchdog(generation);
+        GetRuntimeTaskQueue().Submit(
+            []
+            {
+                auto& state = GetState();
+                state.gameLoadPending = true;
+                state.readinessPollAttempts = 0;
+                const auto generation = state.generation;
+                ScheduleReadinessPoll(generation);
+                ScheduleReadinessWatchdog(generation);
+            });
     }
 
     void Reset()
     {
         ResetSpeedTiming();
-        auto& state = GetState();
-        ++state.generation;
-        state.activeProfile.reset();
-        state.ownedOverride = nullptr;
-        state.releaseAtGameDay.reset();
-        state.gameLoadPending = false;
-        state.readinessPollAttempts = 0;
-        ClearPendingTransition(state);
+        GetRuntimeTaskQueue().Submit(
+            []
+            {
+                auto& state = GetState();
+                AdvanceGeneration(state);
+                state.activeProfile.reset();
+                state.ownedOverride = nullptr;
+                state.releaseAtGameDay.reset();
+                state.gameLoadPending = false;
+                state.readinessPollAttempts = 0;
+                ClearPendingTransition(state);
+            });
     }
 }  // namespace MPL::Heliosphan

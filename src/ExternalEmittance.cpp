@@ -117,10 +117,32 @@ namespace MPL::ExternalEmittance
                 changed);
         }
 
+        void InstallReferenceInitializationHook()
+        {
+            if (referenceInitializationHookInstalled ||
+                GetState().profiles.empty())
+            {
+                return;
+            }
+            REL::Relocation<std::uintptr_t> vtable{
+                RE::TESObjectREFR::VTABLE[0]
+            };
+            ReferenceInitializationHook::func = vtable.write_vfunc(
+                ReferenceInitializationHook::index,
+                ReferenceInitializationHook::thunk);
+            referenceInitializationHookInstalled = true;
+            logger::info(
+                "[External Emittance] Final reference-initialization hook installed");
+        }
+
         void FinalizeReferenceInitialization()
         {
             InstallReferenceInitializationHook();
+            LifecycleTiming::BeginStartupPhase(
+                LifecycleTiming::StartupPhase::DeferredReplay);
             ReplayPlannedReferences();
+            LifecycleTiming::FinishStartupPhase(
+                LifecycleTiming::StartupPhase::DeferredReplay);
             LifecycleTiming::FinishStartup();
         }
 
@@ -372,24 +394,6 @@ namespace MPL::ExternalEmittance
             });
     }
 
-    void InstallReferenceInitializationHook()
-    {
-        if (referenceInitializationHookInstalled ||
-            GetState().profiles.empty())
-        {
-            return;
-        }
-        REL::Relocation<std::uintptr_t> vtable{
-            RE::TESObjectREFR::VTABLE[0]
-        };
-        ReferenceInitializationHook::func = vtable.write_vfunc(
-            ReferenceInitializationHook::index,
-            ReferenceInitializationHook::thunk);
-        referenceInitializationHookInstalled = true;
-        logger::info(
-            "[External Emittance] Final reference-initialization hook installed");
-    }
-
     void ScheduleFinalReferenceInitialization()
     {
         if (referenceInitializationScheduled)
@@ -398,10 +402,15 @@ namespace MPL::ExternalEmittance
         }
         if (GetState().profiles.empty())
         {
+            LifecycleTiming::BeginStartupPhase(
+                LifecycleTiming::StartupPhase::DeferredReplay);
+            LifecycleTiming::FinishStartupPhase(
+                LifecycleTiming::StartupPhase::DeferredReplay);
             LifecycleTiming::FinishStartup();
             return;
         }
         referenceInitializationScheduled = true;
+        LifecycleTiming::BeginDeferredStartupWait();
         auto* tasks = SKSE::GetTaskInterface();
         if (!tasks)
         {
@@ -646,14 +655,32 @@ namespace MPL::ExternalEmittance
         {
             return;
         }
-        auto* plan = FindPlan(a_reference->GetFormID());
+        const auto referenceID = a_reference->GetFormID();
+        auto* plan = FindPlan(referenceID);
         if (!plan)
         {
+            auto* base = a_reference->GetBaseObject();
+            if (!base)
+            {
+                return;
+            }
+            const auto originalBase = CellClassifier::OriginalBase(
+                referenceID,
+                base->GetFormID());
+            const auto effectiveBase = CellClassifier::ProjectBase(
+                referenceID,
+                base->GetFormID());
+            if (!state.directReferences.contains(referenceID) &&
+                !state.watchedBases.contains(originalBase) &&
+                !state.watchedBases.contains(effectiveBase))
+            {
+                return;
+            }
             if (auto matched = MatchReference(a_reference))
             {
                 plan = std::addressof(
                     state.runtimePlans.insert_or_assign(
-                                          a_reference->GetFormID(),
+                                          referenceID,
                                           *matched)
                         .first->second);
             }
@@ -686,6 +713,48 @@ namespace MPL::ExternalEmittance
                 ProcessReference(reference.get());
             }
         }
+    }
+
+    std::size_t NotifyCellEmittanceRefreshed(RE::TESObjectCELL* a_cell)
+    {
+        auto& state = GetState();
+        if (!a_cell || state.clients.empty())
+        {
+            return 0;
+        }
+        auto* loadedData = a_cell->GetRuntimeData().loadedData;
+        if (!loadedData)
+        {
+            return 0;
+        }
+
+        const auto clients = state.clients;
+        std::size_t notified = 0;
+        for (const auto& entry : loadedData->emittanceLightRefMap)
+        {
+            const auto referenceOwner = entry.first.get();
+            auto* reference = referenceOwner.get();
+            const auto* base =
+                reference ? reference->GetBaseObject() : nullptr;
+            const auto* emittance = reference ?
+                                         reference->extraList.GetByType<
+                                             RE::ExtraEmittanceSource>() :
+                                         nullptr;
+            if (!base || !base->Is(RE::FormType::Light) ||
+                !emittance || !emittance->source)
+            {
+                continue;
+            }
+
+            state.emissiveLightReferences.insert(
+                reference->GetFormID());
+            for (const auto& client : clients)
+            {
+                NotifyClient(client, reference);
+            }
+            ++notified;
+        }
+        return notified;
     }
 
     bool RegisterReferenceClient(

@@ -4,6 +4,7 @@
 #include <RE/Skyrim.h>
 #include <HeliosphanAPI.h>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -28,7 +29,14 @@ namespace MPL::LightPlacer
     {
         std::unordered_set<std::string> lights;
         std::string externalEmittance;
+        bool filtered = false;
         std::vector<SourcePlacement> placements;
+        std::unordered_map<RE::FormID, std::vector<std::size_t>>
+            placementsByBase;
+        std::unordered_map<std::string, std::vector<std::size_t>>
+            placementsByModel;
+        std::unordered_map<RE::FormID, std::vector<std::size_t>>
+            placementsByReference;
     };
 
     std::string NormalizeModelPath(std::string_view a_path);
@@ -41,6 +49,7 @@ namespace MPL::LightPlacer
         bool a_filtered);
     bool RequiresPluginIndex();
     bool RequiresCompleteInteriorIndex();
+    void InitializeConfigurationFiles();
     void PreparePlacementFilter();
     bool NeedsPlacement(RE::FormID a_reference, RE::FormID a_base);
     void Prepare(const PluginIndex::Result& a_index);

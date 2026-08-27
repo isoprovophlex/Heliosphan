@@ -1,5 +1,6 @@
 #pragma once
 
+#include <ExternalEmittance.h>
 #include <Heliosphan.h>
 #include <HeliosphanAPI.h>
 #include <algorithm>
@@ -101,6 +102,8 @@ namespace MPL::WeatherRuntime
         detail::updateCellEmittance(cell);
         result.flags |= HeliosphanAPI::ToMask(
             HeliosphanAPI::SetWeatherFlag::kEmittanceRefreshCompleted);
+        const auto clientReferences =
+            ExternalEmittance::NotifyCellEmittanceRefreshed(cell);
         result.status =
             HeliosphanAPI::SetWeatherStatus::kAppliedAndRefreshed;
         result.lightCount = static_cast<std::uint32_t>(
@@ -117,8 +120,8 @@ namespace MPL::WeatherRuntime
                 "[Weather Sync] [Emittance Refresh] "
                 "Cell {:08X}: target={:08X}, override={}, "
                 "source entries={}, region sources={}, region fallbacks={}, "
-                "light entries={}; ForceWeather={} us, region caches={} us, "
-                "native cell refresh={} us, total={} us",
+                "light entries={}, client references={}; ForceWeather={} us, "
+                "region caches={} us, native cell refresh={} us, total={} us",
                 cell->GetFormID(),
                 a_weather->GetFormID(),
                 a_override,
@@ -126,6 +129,7 @@ namespace MPL::WeatherRuntime
                 regionSources,
                 regionFallbacks,
                 lightEntries,
+                clientReferences,
                 forceDuration.count(),
                 regionDuration.count(),
                 refreshDuration.count(),

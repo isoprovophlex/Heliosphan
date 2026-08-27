@@ -25,8 +25,9 @@ namespace MPL::CellClassifier
             std::unordered_set<RE::FormID> matchedReferences;
             std::unordered_set<RE::FormID> includedCells;
             std::unordered_set<RE::FormID> excludedCells;
+            std::unordered_set<const RE::TESFile*> cellPlugins;
             std::vector<RE::BGSKeyword*> excludedLocationTypes;
-            bool active = true;
+            std::vector<RE::BGSKeyword*> multiLocationExceptions;
             bool cellFiltersResolved = false;
         };
 
@@ -111,33 +112,31 @@ namespace MPL::CellClassifier
             return !a_rule.settings.forms.empty() || HasFormContains(a_rule);
         }
 
-        bool PluginLoaded(
-            RE::TESDataHandler& a_dataHandler,
+        const RE::TESFile* LookupPlugin(
+            RE::TESDataHandler* a_dataHandler,
             const std::string_view a_plugin)
         {
-            return !a_plugin.empty() &&
-                   HeliosphanLogic::IsPluginLoaded(
-                       a_dataHandler.LookupLoadedModByName(a_plugin) !=
-                           nullptr,
-                       a_dataHandler.LookupLoadedLightModByName(a_plugin) !=
-                           nullptr);
+            if (!a_dataHandler || a_plugin.empty())
+            {
+                return nullptr;
+            }
+            if (const auto* plugin =
+                    a_dataHandler->LookupLoadedModByName(a_plugin))
+            {
+                return plugin;
+            }
+            return a_dataHandler->LookupLoadedLightModByName(a_plugin);
         }
 
-        bool MatchesPluginGate(const Rule& a_rule)
+        bool MatchesCellPluginFilter(
+            const Rule& a_rule,
+            const RE::TESObjectCELL* a_cell)
         {
-            if (a_rule.settings.plugins.empty())
-            {
-                return true;
-            }
-            auto* dataHandler = RE::TESDataHandler::GetSingleton();
-            return dataHandler && std::ranges::any_of(
-                                      a_rule.settings.plugins,
-                                      [&](const std::string& a_plugin)
-                                      {
-                                          return PluginLoaded(
-                                              *dataHandler,
-                                              a_plugin);
-                                      });
+            const auto* origin = a_cell ? a_cell->GetFile(0) : nullptr;
+            return HeliosphanLogic::MatchesCellOriginPlugin(
+                !a_rule.settings.plugins.empty(),
+                origin != nullptr,
+                origin && a_rule.cellPlugins.contains(origin));
         }
 
         bool HasIndexedSelectors(const Rule& a_rule)
@@ -183,6 +182,52 @@ namespace MPL::CellClassifier
                 });
         }
 
+        const std::vector<std::string>& GetExcludedLocationTypeSelectors(
+            const Settings& a_settings)
+        {
+            if (const auto* legacy =
+                    std::get_if<std::vector<std::string>>(
+                        std::addressof(
+                            a_settings.excludedLocationTypes)))
+            {
+                return *legacy;
+            }
+            return std::get<ExcludedLocationTypes>(
+                       a_settings.excludedLocationTypes)
+                .types;
+        }
+
+        const std::vector<std::string>& GetMultiLocationExceptionSelectors(
+            const Settings& a_settings)
+        {
+            static const std::vector<std::string> empty;
+            if (const auto* settings =
+                    std::get_if<ExcludedLocationTypes>(
+                        std::addressof(
+                            a_settings.excludedLocationTypes)))
+            {
+                return settings->multiLocationExceptions;
+            }
+            return empty;
+        }
+
+        const RE::BGSKeyword* FindLocationType(
+            const RE::BGSLocation* a_location,
+            const std::vector<RE::BGSKeyword*>& a_locationTypes)
+        {
+            const auto found = a_location ?
+                                   std::ranges::find_if(
+                                       a_locationTypes,
+                                       [&](const RE::BGSKeyword* a_keyword)
+                                       {
+                                           return a_keyword &&
+                                                  a_location->HasKeyword(
+                                                      a_keyword);
+                                       }) :
+                                   a_locationTypes.end();
+            return found != a_locationTypes.end() ? *found : nullptr;
+        }
+
         const RE::BGSKeyword* GetExcludedLocationType(
             const Rule& a_rule,
             const RE::TESObjectCELL* a_cell)
@@ -192,18 +237,20 @@ namespace MPL::CellClassifier
                 return nullptr;
             }
             const auto* location = a_cell->GetLocation();
-            const auto found = location ?
-                                   std::ranges::find_if(
-                                       a_rule.excludedLocationTypes,
-                                       [&](const RE::BGSKeyword* a_keyword)
-                                       {
-                                           return a_keyword &&
-                                                  location->HasKeyword(
-                                                      a_keyword);
-                                       }) :
-                                   a_rule.excludedLocationTypes.end();
-            return found != a_rule.excludedLocationTypes.end() ?
-                       *found :
+            const auto* excluded = FindLocationType(
+                location,
+                a_rule.excludedLocationTypes);
+            if (!excluded)
+            {
+                return nullptr;
+            }
+            const auto* exception = FindLocationType(
+                location,
+                a_rule.multiLocationExceptions);
+            return HeliosphanLogic::ShouldExcludeLocationType(
+                       true,
+                       exception != nullptr) ?
+                       excluded :
                        nullptr;
         }
 
@@ -299,6 +346,15 @@ namespace MPL::CellClassifier
             {
                 return;
             }
+            auto* dataHandler = RE::TESDataHandler::GetSingleton();
+            for (const auto& selector : a_rule.settings.plugins)
+            {
+                if (const auto* plugin =
+                        LookupPlugin(dataHandler, selector))
+                {
+                    a_rule.cellPlugins.insert(plugin);
+                }
+            }
             for (const auto& selector : a_rule.settings.includedCells)
             {
                 if (const auto formID = FormResolver::Resolve(selector))
@@ -324,7 +380,7 @@ namespace MPL::CellClassifier
                 }
             }
             for (const auto& selector :
-                 a_rule.settings.excludedLocationTypes)
+                 GetExcludedLocationTypeSelectors(a_rule.settings))
             {
                 if (const auto formID = FormResolver::Resolve(selector))
                 {
@@ -332,6 +388,18 @@ namespace MPL::CellClassifier
                             RE::TESForm::LookupByID<RE::BGSKeyword>(formID))
                     {
                         a_rule.excludedLocationTypes.push_back(keyword);
+                    }
+                }
+            }
+            for (const auto& selector :
+                 GetMultiLocationExceptionSelectors(a_rule.settings))
+            {
+                if (const auto formID = FormResolver::Resolve(selector))
+                {
+                    if (auto* keyword =
+                            RE::TESForm::LookupByID<RE::BGSKeyword>(formID))
+                    {
+                        a_rule.multiLocationExceptions.push_back(keyword);
                     }
                 }
             }
@@ -343,17 +411,6 @@ namespace MPL::CellClassifier
             const std::unordered_map<RE::FormID, std::string>& a_editorIDs)
         {
             ResolveCellFilters(a_rule);
-            a_rule.active = MatchesPluginGate(a_rule);
-            if (!a_rule.active)
-            {
-                if (a_rule.detailedLogging)
-                {
-                    logger::info(
-                        "[Window Sync] [{}] cellContains ignored because no configured plugin is loaded",
-                        a_rule.owner);
-                }
-                return;
-            }
             std::size_t missingForms = 0;
             std::size_t invalidForms = 0;
             std::size_t missingReferences = 0;
@@ -412,7 +469,7 @@ namespace MPL::CellClassifier
             if (a_rule.detailedLogging)
             {
                 logger::info(
-                    "[Window Sync] [{}] Resolved cellContains: STAT forms={}, references={}, object placements={}, missing forms={}, invalid forms={}, missing references={}, configured included cells={}, configured excluded cells={}, configured excluded location types={}",
+                    "[Window Sync] [{}] Resolved cellContains: STAT forms={}, references={}, object placements={}, missing forms={}, invalid forms={}, missing references={}, cell origin plugins={}/{}, configured included cells={}, configured excluded cells={}, configured excluded location types={}, configured multi-location exceptions={}",
                     a_rule.owner,
                     a_rule.forms.size(),
                     a_rule.references.size(),
@@ -420,9 +477,12 @@ namespace MPL::CellClassifier
                     missingForms,
                     invalidForms,
                     missingReferences,
+                    a_rule.cellPlugins.size(),
+                    a_rule.settings.plugins.size(),
                     a_rule.includedCells.size(),
                     a_rule.excludedCells.size(),
-                    a_rule.excludedLocationTypes.size());
+                    a_rule.excludedLocationTypes.size(),
+                    a_rule.multiLocationExceptions.size());
             }
         }
     }  // namespace
@@ -469,8 +529,7 @@ namespace MPL::CellClassifier
             GetState().rules,
             [](const Rule& a_rule)
             {
-                return MatchesPluginGate(a_rule) &&
-                       HasFormContains(a_rule);
+                return HasFormContains(a_rule);
             });
     }
 
@@ -480,8 +539,7 @@ namespace MPL::CellClassifier
             GetState().rules,
             [](const Rule& a_rule)
             {
-                return MatchesPluginGate(a_rule) &&
-                       HasIndexedSelectors(a_rule);
+                return HasIndexedSelectors(a_rule);
             });
     }
 
@@ -520,10 +578,9 @@ namespace MPL::CellClassifier
             state.rules,
             [&](const Rule& a_rule)
             {
-                return a_rule.active &&
-                       (a_rule.references.contains(a_reference) ||
+                return a_rule.references.contains(a_reference) ||
                            (!a_rule.forms.empty() &&
-                               MatchesPlacement(a_rule, placement)));
+                               MatchesPlacement(a_rule, placement));
             });
     }
 
@@ -554,8 +611,7 @@ namespace MPL::CellClassifier
             state.rules,
             [&](const Rule& a_rule)
             {
-                return a_rule.active &&
-                       std::ranges::any_of(
+                return std::ranges::any_of(
                            a_rule.settings.profiles,
                            matches);
             });
@@ -573,10 +629,6 @@ namespace MPL::CellClassifier
         std::size_t activeRules = 0;
         for (auto& rule : state.rules)
         {
-            if (!MatchesPluginGate(rule))
-            {
-                continue;
-            }
             ResolveCellFilters(rule);
             ++activeRules;
         }
@@ -596,7 +648,7 @@ namespace MPL::CellClassifier
             const RE::BGSKeyword* excludedLocationType = nullptr;
             for (const auto& rule : state.rules)
             {
-                if (!MatchesPluginGate(rule) ||
+                if (!MatchesCellPluginFilter(rule, cell) ||
                     rule.includedCells.contains(cell->GetFormID()))
                 {
                     continue;
@@ -670,8 +722,7 @@ namespace MPL::CellClassifier
                     state.rules,
                     [&](const Rule& a_rule)
                     {
-                        return a_rule.active &&
-                               a_rule.references.contains(
+                        return a_rule.references.contains(
                                    placement.reference);
                     });
             if (!placement.deleted &&
@@ -723,18 +774,20 @@ namespace MPL::CellClassifier
             const RE::BGSKeyword* excludedLocationType = nullptr;
             for (const auto& rule : state.rules)
             {
+                const bool matchesCellPlugin =
+                    MatchesCellPluginFilter(rule, cell);
                 const bool explicitlyIncluded =
                     rule.includedCells.contains(cellID);
                 const bool explicitlyExcluded =
                     rule.excludedCells.contains(cellID);
                 const auto* locationType =
-                    rule.active && !explicitlyIncluded &&
+                    matchesCellPlugin && !explicitlyIncluded &&
                             !explicitlyExcluded ?
                         GetExcludedLocationType(rule, cell) :
                         nullptr;
                 const auto exclusion =
                     HeliosphanLogic::EvaluateCellExclusion(
-                        rule.active,
+                        matchesCellPlugin,
                         explicitlyIncluded,
                         explicitlyExcluded,
                         locationType != nullptr);
@@ -763,7 +816,7 @@ namespace MPL::CellClassifier
             auto& profiles = state.cells[cellID];
             for (auto& rule : state.rules)
             {
-                if (!rule.active)
+                if (!MatchesCellPluginFilter(rule, cell))
                 {
                     continue;
                 }
@@ -911,8 +964,7 @@ namespace MPL::CellClassifier
         std::vector<RE::FormID> references;
         for (const auto& rule : GetState().rules)
         {
-            if (!rule.active ||
-                !EqualsCaseInsensitive(rule.owner, a_owner))
+            if (!EqualsCaseInsensitive(rule.owner, a_owner))
             {
                 continue;
             }

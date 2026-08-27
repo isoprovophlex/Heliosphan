@@ -1,7 +1,9 @@
 #pragma once
 
 #include <cstdint>
+#include <map>
 #include <optional>
+#include <string>
 #include <string_view>
 
 namespace MPL::HeliosphanLogic
@@ -34,6 +36,23 @@ namespace MPL::HeliosphanLogic
         bool a_explicitlyExcluded,
         bool a_excludedLocationType);
 
+    bool ShouldExcludeLocationType(
+        bool a_hasExcludedLocationType,
+        bool a_hasMultiLocationException);
+
+    bool ShouldActivateProfileForPlugins(
+        bool a_hasPluginFilter,
+        bool a_hasLoadedPlugin);
+
+    bool MatchesCellOriginPlugin(
+        bool a_hasPluginFilter,
+        bool a_hasOriginPlugin,
+        bool a_originPluginMatches);
+
+    const std::string* FindRegionOverride(
+        const std::map<std::string, std::string>& a_overrides,
+        std::string_view a_sourceRegion);
+
     bool ProfilePrecedes(
         const std::optional<ProfilePriority>& a_left,
         const std::optional<ProfilePriority>& a_right,
@@ -44,6 +63,25 @@ namespace MPL::HeliosphanLogic
         std::uint64_t a_scheduledGeneration,
         std::uint64_t a_currentGeneration,
         bool a_hasPendingTransition);
+
+    bool ShouldAcceptLoadedCellEvent(
+        std::uint32_t a_eventCell,
+        std::uint32_t a_playerCell,
+        std::uint32_t a_pendingCell,
+        std::uint64_t a_eventGeneration,
+        std::uint64_t a_currentGeneration,
+        bool a_gameLoadPending,
+        bool a_transitionPending);
+
+    bool IsReadinessBudgetActive(
+        bool a_gameLoadPending,
+        bool a_hasPlayerCell);
+
+    bool ShouldUseLightPlacerReferenceFallback(
+        bool a_filteredRule,
+        bool a_hasResolvedSource,
+        bool a_hasDirectSourceMatch,
+        bool a_hasWhitelistedReferenceMatch);
 
     bool IsPluginLoaded(bool a_fullPluginLoaded, bool a_lightPluginLoaded);
 

@@ -2,7 +2,6 @@
 .vscode*
 .cache
 compile_commands.json
-.clang-format
 *.bat
 /tests
 /test-results

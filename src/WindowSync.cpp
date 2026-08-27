@@ -1,12 +1,14 @@
 #include <CellClassifier.h>
 #include <ExternalEmittance.h>
 #include <LightPlacer.h>
+#include <LifecycleTiming.h>
 #include <ObjectOverrides.h>
 #include <PluginIndex.h>
 #include <LumaClient.h>
 #include <RegionRuntime.h>
 #include <RoomMarkerPatcher.h>
 #include <Heliosphan.h>
+#include <HeliosphanLogic.h>
 #include <WindowSync.h>
 #include <algorithm>
 #include <optional>
@@ -113,17 +115,42 @@ namespace MPL::WindowSync
             return profiles;
         }
 
-        RE::TESRegion* ResolveTargetRegion(
+        struct TargetRegionResolution
+        {
+            RE::TESRegion* region = nullptr;
+            std::string targetEditorID;
+            bool forced = false;
+        };
+
+        TargetRegionResolution ResolveTargetRegion(
             const Heliosphan::WindowSyncProfile& a_profile,
             RE::TESRegion* a_sourceRegion)
         {
             auto sourceEditorID = RegionEditorID(a_sourceRegion);
             if (sourceEditorID.empty())
             {
-                return nullptr;
+                return {};
+            }
+            if (a_profile.regionOverrides)
+            {
+                if (const auto* targetEditorID =
+                        HeliosphanLogic::FindRegionOverride(
+                            *a_profile.regionOverrides,
+                            sourceEditorID))
+                {
+                    return TargetRegionResolution{
+                        .region = LookupRegion(*targetEditorID),
+                        .targetEditorID = *targetEditorID,
+                        .forced = true,
+                    };
+                }
             }
             const auto baseEditorID = Heliosphan::BaseRegionEditorID(sourceEditorID);
-            return LookupRegion(a_profile.regionPrefix + baseEditorID);
+            auto targetEditorID = a_profile.regionPrefix + baseEditorID;
+            return TargetRegionResolution{
+                .region = LookupRegion(targetEditorID),
+                .targetEditorID = std::move(targetEditorID),
+            };
         }
 
         RE::TESRegion* ResolveFallbackTargetRegion(
@@ -142,7 +169,7 @@ namespace MPL::WindowSync
             {
                 return fallbackRegion;
             }
-            return ResolveTargetRegion(a_profile, fallbackRegion);
+            return ResolveTargetRegion(a_profile, fallbackRegion).region;
         }
 
         void ShowRegionSyncFailure(
@@ -321,17 +348,28 @@ namespace MPL::WindowSync
                 ShowRegionSyncFailure(*syncProfile);
                 return false;
             }
-            auto* targetRegion = ResolveTargetRegion(*syncProfile, sourceRegion);
+            const auto targetResolution =
+                ResolveTargetRegion(*syncProfile, sourceRegion);
+            auto* targetRegion = targetResolution.region;
             if (!targetRegion)
             {
-                const auto targetEditorID =
-                    syncProfile->regionPrefix +
-                    Heliosphan::BaseRegionEditorID(RegionEditorID(sourceRegion));
-                logger::warn(
-                    "[Window Sync] [{}] Could not find the synchronized region '{}' for cell {:08X}",
-                    syncProfile->id,
-                    targetEditorID,
-                    a_transition.destination ? a_transition.destination->GetFormID() : 0);
+                if (targetResolution.forced)
+                {
+                    logger::warn(
+                        "[Window Sync] [{}] Forced region override '{}' -> '{}' could not be resolved for cell {:08X}",
+                        syncProfile->id,
+                        RegionEditorID(sourceRegion),
+                        targetResolution.targetEditorID,
+                        a_transition.destination ? a_transition.destination->GetFormID() : 0);
+                }
+                else
+                {
+                    logger::warn(
+                        "[Window Sync] [{}] Could not find the synchronized region '{}' for cell {:08X}",
+                        syncProfile->id,
+                        targetResolution.targetEditorID,
+                        a_transition.destination ? a_transition.destination->GetFormID() : 0);
+                }
                 targetRegion = ResolveFallbackTargetRegion(*syncProfile);
                 if (targetRegion)
                 {
@@ -363,12 +401,13 @@ namespace MPL::WindowSync
             LogDetailed(
                 *syncProfile,
                 std::format(
-                    "Window Sync applied: cell={:08X}, profile={}, region='{}', layers={}, fallback={}",
+                    "Window Sync applied: cell={:08X}, profile={}, region='{}', layers={}, fallback={}, forced={}",
                     a_transition.destination->GetFormID(),
                     syncProfile->id,
                     RegionEditorID(targetRegion),
                     profiles.size(),
-                    a_transition.usedDefaultRegion));
+                    a_transition.usedDefaultRegion,
+                    targetResolution.forced && !a_transition.usedDefaultRegion));
             return true;
         }
 
@@ -612,7 +651,11 @@ namespace MPL::WindowSync
                     indexOptions.excludedCells.size(),
                     globalLightPlacer ? "active" : "inactive",
                     globalExternalEmittance ? "active" : "inactive");
+                LifecycleTiming::BeginStartupPhase(
+                    LifecycleTiming::StartupPhase::PluginIndex);
                 index = PluginIndex::Build(indexOptions);
+                LifecycleTiming::FinishStartupPhase(
+                    LifecycleTiming::StartupPhase::PluginIndex);
             }
             else
             {
@@ -620,12 +663,28 @@ namespace MPL::WindowSync
                 logger::info(
                     "[Window Sync] Plugin index skipped because no active feature requires saved reference data");
             }
+            LifecycleTiming::BeginStartupPhase(
+                LifecycleTiming::StartupPhase::CellClassification);
             const bool prepared = CellClassifier::Prepare(index);
+            LifecycleTiming::FinishStartupPhase(
+                LifecycleTiming::StartupPhase::CellClassification);
             if (prepared)
             {
+                LifecycleTiming::BeginStartupPhase(
+                    LifecycleTiming::StartupPhase::LightPlacer);
                 LightPlacer::Prepare(index);
+                LifecycleTiming::FinishStartupPhase(
+                    LifecycleTiming::StartupPhase::LightPlacer);
+                LifecycleTiming::BeginStartupPhase(
+                    LifecycleTiming::StartupPhase::CellClassification);
                 ApplyPreparedClassification();
+                LifecycleTiming::FinishStartupPhase(
+                    LifecycleTiming::StartupPhase::CellClassification);
+                LifecycleTiming::BeginStartupPhase(
+                    LifecycleTiming::StartupPhase::ExternalEmittance);
                 ExternalEmittance::Prepare(index);
+                LifecycleTiming::FinishStartupPhase(
+                    LifecycleTiming::StartupPhase::ExternalEmittance);
             }
             else
             {

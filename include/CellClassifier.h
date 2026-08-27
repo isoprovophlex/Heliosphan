@@ -6,10 +6,17 @@
 #include <string>
 #include <string_view>
 #include <unordered_set>
+#include <variant>
 #include <vector>
 
 namespace MPL::CellClassifier
 {
+    struct ExcludedLocationTypes
+    {
+        std::vector<std::string> types;
+        std::vector<std::string> multiLocationExceptions;
+    };
+
     struct Settings
     {
         std::vector<std::string> forms;
@@ -20,7 +27,10 @@ namespace MPL::CellClassifier
         std::vector<std::string> profiles;
         std::vector<std::string> includedCells;
         std::vector<std::string> excludedCells;
-        std::vector<std::string> excludedLocationTypes;
+        std::variant<
+            std::vector<std::string>,
+            ExcludedLocationTypes>
+            excludedLocationTypes;
         std::string emittance;
     };
 

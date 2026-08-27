@@ -406,6 +406,8 @@ namespace MPL::ObjectOverrides::Patches
             std::vector<Profile> profiles;
             std::unordered_map<RE::FormID, std::vector<ResolvedTransform>> transforms;
             std::vector<ResolvedPlacement> placements;
+            std::unordered_map<RE::FormID, std::vector<std::size_t>>
+                placementsByCell;
             std::unordered_map<std::string, OwnedPlacement> created;
             std::unordered_map<RE::FormID, std::string> transformOwners;
             std::size_t projectionCount = 0;
@@ -944,6 +946,14 @@ namespace MPL::ObjectOverrides::Patches
                     ResolvePlacement(profile, id, placement) ? 1 : 0;
             }
         }
+        for (std::size_t index = 0; index < state.placements.size(); ++index)
+        {
+            const auto* cell = state.placements[index].cell;
+            if (cell)
+            {
+                state.placementsByCell[cell->GetFormID()].push_back(index);
+            }
+        }
         state.projectionCount += state.placements.size();
         state.initialized = true;
         std::size_t availableReferences = 0;
@@ -1096,12 +1106,8 @@ namespace MPL::ObjectOverrides::Patches
         std::size_t created = 0;
         std::size_t retained = 0;
         std::size_t failed = 0;
-        for (const auto& placement : state.placements)
+        const auto ensurePlacement = [&](const ResolvedPlacement& placement)
         {
-            if (a_cell && placement.cell != a_cell)
-            {
-                continue;
-            }
             if (const auto existing = state.created.find(placement.key);
                 existing != state.created.end())
             {
@@ -1111,7 +1117,7 @@ namespace MPL::ObjectOverrides::Patches
                         state.loadGeneration))
                 {
                     ++retained;
-                    continue;
+                    return;
                 }
             }
 
@@ -1135,7 +1141,7 @@ namespace MPL::ObjectOverrides::Patches
                     placement.profile,
                     placement.id,
                     placement.cell->GetFormID());
-                continue;
+                return;
             }
 
             reference->SetTemporary();
@@ -1150,6 +1156,28 @@ namespace MPL::ObjectOverrides::Patches
                     .generation = state.loadGeneration,
                 });
             ++created;
+        };
+        if (a_cell)
+        {
+            const auto found = state.placementsByCell.find(
+                a_cell->GetFormID());
+            if (found != state.placementsByCell.end())
+            {
+                for (const auto index : found->second)
+                {
+                    if (index < state.placements.size())
+                    {
+                        ensurePlacement(state.placements[index]);
+                    }
+                }
+            }
+        }
+        else
+        {
+            for (const auto& placement : state.placements)
+            {
+                ensurePlacement(placement);
+            }
         }
         if (created != 0 || failed != 0)
         {

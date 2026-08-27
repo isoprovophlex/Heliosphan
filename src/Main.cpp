@@ -36,8 +36,13 @@ namespace
                         MPL::LumaAPI::kVersion);
                     break;
                 }
+                MPL::LifecycleTiming::ResumeStartupAfterEngineWait();
+                MPL::LifecycleTiming::BeginStartupPhase(
+                    MPL::LifecycleTiming::StartupPhase::Configuration);
                 MPL::Heliosphan::LoadConfiguration();
-                MPL::LifecycleTiming::LogStartupStart();
+                MPL::LifecycleTiming::FinishStartupPhase(
+                    MPL::LifecycleTiming::StartupPhase::Configuration);
+                MPL::LifecycleTiming::BeginStartupEngineWait();
                 break;
             }
         case SKSE::MessagingInterface::kDataLoaded:
@@ -46,7 +51,13 @@ namespace
                 {
                     break;
                 }
+                MPL::LifecycleTiming::ResumeStartupAfterEngineWait();
                 MPL::Heliosphan::OnDataLoaded();
+                MPL::LifecycleTiming::BeginStartupPhase(
+                    MPL::LifecycleTiming::StartupPhase::LightPlacer);
+                MPL::LightPlacer::InitializeConfigurationFiles();
+                MPL::LifecycleTiming::FinishStartupPhase(
+                    MPL::LifecycleTiming::StartupPhase::LightPlacer);
                 MPL::WindowSync::Initialize();
                 MPL::ExternalEmittance::ScheduleFinalReferenceInitialization();
                 if (auto* tasks = SKSE::GetTaskInterface())

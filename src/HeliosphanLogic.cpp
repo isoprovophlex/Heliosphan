@@ -23,6 +23,53 @@ namespace MPL::HeliosphanLogic
                    CellExclusion::none;
     }
 
+    bool ShouldExcludeLocationType(
+        const bool a_hasExcludedLocationType,
+        const bool a_hasMultiLocationException)
+    {
+        return a_hasExcludedLocationType &&
+               !a_hasMultiLocationException;
+    }
+
+    bool ShouldActivateProfileForPlugins(
+        const bool a_hasPluginFilter,
+        const bool a_hasLoadedPlugin)
+    {
+        return !a_hasPluginFilter || a_hasLoadedPlugin;
+    }
+
+    bool MatchesCellOriginPlugin(
+        const bool a_hasPluginFilter,
+        const bool a_hasOriginPlugin,
+        const bool a_originPluginMatches)
+    {
+        return !a_hasPluginFilter ||
+               (a_hasOriginPlugin && a_originPluginMatches);
+    }
+
+    const std::string* FindRegionOverride(
+        const std::map<std::string, std::string>& a_overrides,
+        const std::string_view a_sourceRegion)
+    {
+        if (a_sourceRegion.empty())
+        {
+            return nullptr;
+        }
+        const auto match = std::ranges::find_if(
+            a_overrides,
+            [&](const auto& a_override)
+            {
+                return a_override.first.size() == a_sourceRegion.size() &&
+                       _strnicmp(
+                           a_override.first.data(),
+                           a_sourceRegion.data(),
+                           a_sourceRegion.size()) == 0;
+            });
+        return match != a_overrides.end() ?
+                   std::addressof(match->second) :
+                   nullptr;
+    }
+
     bool ProfilePrecedes(
         const std::optional<ProfilePriority>& a_left,
         const std::optional<ProfilePriority>& a_right,
@@ -68,6 +115,42 @@ namespace MPL::HeliosphanLogic
     {
         return a_scheduledGeneration == a_currentGeneration &&
                a_hasPendingTransition;
+    }
+
+    bool ShouldAcceptLoadedCellEvent(
+        const std::uint32_t a_eventCell,
+        const std::uint32_t a_playerCell,
+        const std::uint32_t a_pendingCell,
+        const std::uint64_t a_eventGeneration,
+        const std::uint64_t a_currentGeneration,
+        const bool a_gameLoadPending,
+        const bool a_transitionPending)
+    {
+        if (!a_eventCell ||
+            a_eventGeneration != a_currentGeneration)
+        {
+            return false;
+        }
+        return (a_gameLoadPending && a_eventCell == a_playerCell) ||
+               (a_transitionPending && a_eventCell == a_pendingCell);
+    }
+
+    bool IsReadinessBudgetActive(
+        const bool a_gameLoadPending,
+        const bool a_hasPlayerCell)
+    {
+        return !a_gameLoadPending || a_hasPlayerCell;
+    }
+
+    bool ShouldUseLightPlacerReferenceFallback(
+        const bool a_filteredRule,
+        const bool a_hasResolvedSource,
+        const bool a_hasDirectSourceMatch,
+        const bool a_hasWhitelistedReferenceMatch)
+    {
+        return a_filteredRule && a_hasResolvedSource &&
+               !a_hasDirectSourceMatch &&
+               a_hasWhitelistedReferenceMatch;
     }
 
     bool IsPluginLoaded(
