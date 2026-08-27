@@ -1,16 +1,12 @@
 #pragma once
 
 #include <LumaAPI.h>
-#include <cstdint>
 #include <string>
 #include <string_view>
 
 namespace MPL::LumaClient
 {
     bool Load();
-    bool GetProviderSettings(std::string_view, bool&, bool&);
-    bool UpdateProviderSettings(
-        std::string_view,
-        std::int8_t,
-        std::int8_t);
+    bool GetProviderDetailedLogging(std::string_view, bool&);
+    bool UpdateProviderDetailedLogging(std::string_view, bool);
 }  // namespace MPL::LumaClient

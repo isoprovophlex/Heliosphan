@@ -70,8 +70,7 @@ namespace MPL::ObjectOverrides
         void AddGroup(
             std::string a_profile,
             std::string a_id,
-            Group a_group,
-            bool a_detailedLogging);
+            Group a_group);
         std::size_t GetConfiguredProjectionCount();
         void Initialize();
         bool HasProjections();
@@ -82,7 +81,6 @@ namespace MPL::ObjectOverrides
             RE::FormID* a_cell,
             RE::FormID* a_base,
             std::string_view* a_profile = nullptr);
-        void SetDetailedLogging(std::string_view a_profile, bool a_enabled);
         void BeginGameLoad();
         void CompleteGameLoad(RE::TESObjectCELL* a_cell);
         void ApplyTransformsToReference(RE::TESObjectREFR* a_reference);

@@ -52,4 +52,7 @@ namespace MPL::CellClassifier
     std::uint32_t ProjectBase(
         std::uint32_t a_reference,
         std::uint32_t a_base);
+    std::uint32_t OriginalBase(
+        std::uint32_t a_reference,
+        std::uint32_t a_base);
 }  // namespace MPL::CellClassifier

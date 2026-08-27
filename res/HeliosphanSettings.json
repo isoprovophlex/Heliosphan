@@ -2,6 +2,7 @@
     "id":  "Helios",
     "LumaManifest":  true,
     "detailedLogging":  true,
+    "speedLogs":  true,
     "notifications":  true,
     "version":  "2.0.0.0",
     "compatibility":  [

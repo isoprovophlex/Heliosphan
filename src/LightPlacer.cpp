@@ -44,7 +44,6 @@ namespace MPL::LightPlacer
             std::string id;
             Settings settings;
             bool filtered = false;
-            bool detailedLogging = false;
         };
 
         std::mutex brokerLock;
@@ -90,14 +89,6 @@ namespace MPL::LightPlacer
             });
         }
 
-        std::string DescribeArray(
-            const Json& a_object,
-            const std::string_view a_key)
-        {
-            const auto found = a_object.find(a_key);
-            return found != a_object.end() ? found->dump() : "<none>";
-        }
-
         std::string DescribeForms(const FormSet& a_forms)
         {
             std::vector<std::string> forms;
@@ -119,61 +110,6 @@ namespace MPL::LightPlacer
             }
             result += "]";
             return result;
-        }
-
-        std::string DescribePlacements(const PlacementList& a_placements)
-        {
-            std::vector<std::string> placements;
-            placements.reserve(a_placements.size());
-            for (const auto* placement : a_placements)
-            {
-                if (placement)
-                {
-                    placements.push_back(std::format(
-                        "{}@{}",
-                        StableFormKey(placement->reference),
-                        StableFormKey(placement->cell)));
-                }
-            }
-            std::ranges::sort(placements);
-
-            std::string result = "[";
-            for (std::size_t index = 0; index < placements.size(); ++index)
-            {
-                if (index > 0)
-                {
-                    result += ", ";
-                }
-                result += placements[index];
-            }
-            result += "]";
-            return result;
-        }
-
-        bool HasRelevantLight(
-            const Json& a_source,
-            const std::vector<PatchRule>& a_rules)
-        {
-            const auto lights = a_source.find("lights");
-            if (lights == a_source.end() || !lights->is_array())
-            {
-                return false;
-            }
-            return std::ranges::any_of(*lights, [&](const Json& a_light) {
-                const auto data =
-                    a_light.is_object() ? a_light.find("data") : a_light.end();
-                const auto light =
-                    data != a_light.end() && data->is_object() ?
-                        data->find("light") :
-                        data->end();
-                return light != data->end() && light->is_string() &&
-                       std::ranges::any_of(a_rules, [&](const PatchRule& a_rule) {
-                           return a_rule.detailedLogging &&
-                                  LightMatches(
-                                      light->get_ref<const std::string&>(),
-                                      a_rule.lights);
-                       });
-            });
         }
 
         bool SourceUsesConfiguredLight(
@@ -425,8 +361,7 @@ namespace MPL::LightPlacer
         bool PatchSource(
             Json& a_source,
             const std::vector<PatchRule>& a_rules,
-            PatchStats& a_stats,
-            const std::filesystem::path& a_path)
+            PatchStats& a_stats)
         {
             auto lights = a_source.find("lights");
             if (lights == a_source.end() || !lights->is_array())
@@ -447,17 +382,6 @@ namespace MPL::LightPlacer
                         return !a_placements.empty();
                 }))
             {
-                if (HasRelevantLight(a_source, a_rules))
-                {
-                    logger::info(
-                        "{} decision: file='{}', source formIDs={}, models={}, "
-                        "matching Light Placer rule found but no source placement in a "
-                        "classified cell matched",
-                        kLogPrefix,
-                        a_path.string(),
-                        DescribeArray(a_source, "formIDs"),
-                        DescribeArray(a_source, "models"));
-                }
                 return false;
             }
 
@@ -524,29 +448,6 @@ namespace MPL::LightPlacer
                     const auto effective =
                         ApplyExistingFilters(inputLight, candidates);
                     auto references = PlacementReferences(effective);
-                    if (rule.detailedLogging)
-                    {
-                        const auto points = inputLight.find("points");
-                        logger::info(
-                            "{} decision: file='{}', source formIDs={}, models={}, "
-                            "light='{}', points={}, original emittance='{}', "
-                            "whiteList={}, blackList={}, candidate references={}, "
-                            "effective references={}, target emittance='{}'",
-                            kLogPrefix,
-                            a_path.string(),
-                            DescribeArray(a_source, "formIDs"),
-                            DescribeArray(a_source, "models"),
-                            light->get_ref<const std::string&>(),
-                            points != inputLight.end() && points->is_array() ?
-                                points->size() :
-                                0,
-                            external->get_ref<const std::string&>(),
-                            DescribeArray(inputLight, "whiteList"),
-                            DescribeArray(inputLight, "blackList"),
-                            DescribePlacements(candidates),
-                            DescribePlacements(effective),
-                            rule.externalEmittance);
-                    }
                     std::erase_if(references, [&](const RE::FormID a_reference) {
                         return claimed.contains(a_reference);
                     });
@@ -762,8 +663,7 @@ namespace MPL::LightPlacer
                                 changed |= PatchSource(
                                     source,
                                     a_rules,
-                                    a_stats,
-                                    entry.path());
+                                    a_stats);
                             }
                         }
                         if (changed)
@@ -1074,8 +974,7 @@ namespace MPL::LightPlacer
     void AddProfile(
         std::string a_id,
         Settings a_settings,
-        const bool a_filtered,
-        const bool a_detailedLogging)
+        const bool a_filtered)
     {
         if (a_id.empty() || a_settings.lights.empty() ||
             a_settings.externalEmittance.empty())
@@ -1087,7 +986,6 @@ namespace MPL::LightPlacer
             .id = std::move(a_id),
             .settings = std::move(a_settings),
             .filtered = a_filtered,
-            .detailedLogging = a_detailedLogging,
         });
     }
 
@@ -1315,7 +1213,6 @@ namespace MPL::LightPlacer
                     profile.settings.lights.end()),
                 .externalEmittance =
                     profile.settings.externalEmittance,
-                .detailedLogging = profile.detailedLogging,
             };
             for (const auto& [referenceID, placement] : a_index.placements)
             {

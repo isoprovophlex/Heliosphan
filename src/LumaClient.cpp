@@ -1,7 +1,7 @@
+#include <Heliosphan.h>
 #include <LumaClient.h>
 #include <ObjectOverrides.h>
 #include <RoomMarkerPatcher.h>
-#include <Heliosphan.h>
 #include <WindowSync.h>
 #include <string>
 
@@ -21,6 +21,7 @@ namespace MPL::LumaClient
 
         void OnCellChanging(RE::TESObjectCELL* a_destination)
         {
+            Heliosphan::BeginCellTiming(a_destination);
             if (a_destination)
             {
                 ObjectOverrides::Patches::EnsurePlacements(a_destination);
@@ -35,7 +36,10 @@ namespace MPL::LumaClient
 
         void OnCellChanged(const RE::TESObjectCELL* a_destination)
         {
+            auto* destination =
+                const_cast<RE::TESObjectCELL*>(a_destination);
             WindowSync::FinishCellChange(a_destination);
+            Heliosphan::FinishCellTiming(destination);
         }
 
         void OnCellPatched(
@@ -79,29 +83,30 @@ namespace MPL::LumaClient
         return api->RegisterClient(std::addressof(callbacks));
     }
 
-    bool GetProviderSettings(
+    bool GetProviderDetailedLogging(
         const std::string_view a_id,
-        bool& a_detailedLogging,
-        bool& a_notifications)
+        bool& a_detailedLogging)
     {
         const std::string id(a_id);
         return api && api->GetProviderSettings &&
                api->GetProviderSettings(
                    id.c_str(),
                    std::addressof(a_detailedLogging),
-                   std::addressof(a_notifications));
+                   nullptr);
     }
 
-    bool UpdateProviderSettings(
+    bool UpdateProviderDetailedLogging(
         const std::string_view a_id,
-        const std::int8_t a_detailedLogging,
-        const std::int8_t a_notifications)
+        const bool a_detailedLogging)
     {
         const std::string id(a_id);
         return api && api->UpdateProviderSettings &&
                api->UpdateProviderSettings(
                    id.c_str(),
-                   a_detailedLogging,
-                   a_notifications);
+                   a_detailedLogging ?
+                       std::int8_t{ 1 } :
+                       std::int8_t{ 0 },
+                   std::int8_t{ -1 });
     }
+
 }  // namespace MPL::LumaClient

@@ -46,9 +46,12 @@ namespace MPL::Heliosphan
     };
 
     bool IsDetailedLoggingEnabled();
+    bool IsSpeedLoggingEnabled();
     bool GetProfileDetailedLogging(std::string_view a_profile);
+    bool GetProfileSpeedLogging(std::string_view a_profile);
     bool GetProfileNotifications(std::string_view a_profile);
     bool SetProfileDetailedLogging(std::string_view a_profile, bool a_enabled);
+    bool SetProfileSpeedLogging(std::string_view a_profile, bool a_enabled);
     bool SetProfileNotifications(std::string_view a_profile, bool a_enabled);
     void LoadConfiguration();
     void RecordCellPatch(RE::TESObjectCELL* a_cell, std::string_view a_provider, bool a_hasSkylight);
@@ -63,6 +66,8 @@ namespace MPL::Heliosphan
     std::string BaseRegionEditorID(std::string_view a_editorID);
     API::MMSF::Interface* GetMMSFAPI();
     RE::TESWeather* CaptureSourceWeather();
+    void BeginCellTiming(RE::TESObjectCELL* a_cell);
+    void FinishCellTiming(RE::TESObjectCELL* a_cell);
     void OnCellChanged(
         const RE::TESObjectCELL* a_cell,
         RE::TESWeather* a_sourceWeather,

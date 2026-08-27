@@ -147,24 +147,6 @@ namespace MPL::RegionWeatherPatcher
         }
 
         template <class... Args>
-        void LogDetailed(
-            const bool a_enabled,
-            const std::string_view a_profile,
-            std::format_string<Args...> a_format,
-            Args&&... a_args)
-        {
-            if (a_enabled)
-            {
-                logger::info(
-                    "[Weather Sync] [{}] [Region Weather] {}",
-                    a_profile,
-                std::format(
-                    a_format,
-                    std::forward<Args>(a_args)...));
-            }
-        }
-
-        template <class... Args>
         void LogDetailedWarning(
             const bool a_enabled,
             const std::string_view a_profile,
@@ -224,12 +206,6 @@ namespace MPL::RegionWeatherPatcher
                 targetPlugins.insert(plugin);
                 ++summary.loadedPlugins;
             }
-            LogDetailed(
-                a_detailedLogging,
-                a_profile,
-                "Target plugin '{}' is {}",
-                pluginName,
-                plugin ? "loaded" : "not loaded");
         }
         if (targetPlugins.empty())
         {
@@ -398,28 +374,6 @@ namespace MPL::RegionWeatherPatcher
             ++summary.patchedRegions;
             summary.copiedEntries += mapped.size();
 
-            LogDetailed(
-                a_detailedLogging,
-                a_profile,
-                "Patched '{}' from "
-                "winning region '{}': {} weather entry(s) copied, {} omitted",
-                targetEditorID,
-                sourceEditorID,
-                mapped.size(),
-                sourceData->weatherTypes.size() - mapped.size());
-            for (const auto& entry : mapped)
-            {
-                LogDetailed(
-                    a_detailedLogging,
-                    a_profile,
-                    "{} -> {}: chance={}, global={}",
-                    entry.sourceEditorID,
-                    entry.targetEditorID,
-                    entry.chance,
-                    entry.global ?
-                        std::format("{:08X}", entry.global->formID) :
-                        "<none>");
-            }
         }
 
         logger::info(

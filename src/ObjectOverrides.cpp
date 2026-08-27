@@ -1,6 +1,7 @@
 #include <FormResolver.h>
 #include <ObjectOverrides.h>
 #include <Heliosphan.h>
+#include <HeliosphanLogic.h>
 #include <algorithm>
 #include <cctype>
 #include <cmath>
@@ -8,6 +9,7 @@
 #include <limits>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <numbers>
 #include <optional>
 #include <string>
@@ -31,6 +33,10 @@ namespace MPL::ObjectOverrides
             ProfileOverrides global;
             std::unordered_map<std::string, ProfileOverrides> profiles;
             std::unordered_set<RE::FormID> sources;
+            std::mutex applicationLock;
+            std::unordered_map<
+                RE::FormID,
+                std::map<std::string, std::size_t>> applicationsByCell;
             std::size_t overrideCount = 0;
             bool globalDetailedLogging = false;
             bool initialized = false;
@@ -55,40 +61,34 @@ namespace MPL::ObjectOverrides
             return result;
         }
 
-        std::string_view Trim(std::string_view a_value)
+        void RecordApplication(
+            const RE::TESObjectREFR& a_reference,
+            const std::string_view a_profile)
         {
-            while (!a_value.empty() &&
-                   std::isspace(
-                       static_cast<unsigned char>(a_value.front())))
+            const auto* cell = a_reference.GetParentCell();
+            if (!cell)
             {
-                a_value.remove_prefix(1);
+                return;
             }
-            while (!a_value.empty() &&
-                   std::isspace(
-                       static_cast<unsigned char>(a_value.back())))
-            {
-                a_value.remove_suffix(1);
-            }
-            return a_value;
+            auto& state = GetState();
+            std::scoped_lock lock(state.applicationLock);
+            ++state.applicationsByCell[cell->GetFormID()][
+                std::string(a_profile)];
         }
 
-        std::optional<std::string> MissingSourcePlugin(
-            const std::string_view a_selector)
+        std::map<std::string, std::size_t> TakeApplications(
+            const RE::FormID a_cell)
         {
-            const auto separator = a_selector.find_first_of("~:");
-            if (separator == std::string_view::npos)
+            auto& state = GetState();
+            std::scoped_lock lock(state.applicationLock);
+            const auto found = state.applicationsByCell.find(a_cell);
+            if (found == state.applicationsByCell.end())
             {
-                return std::nullopt;
+                return {};
             }
-            const auto plugin = Trim(a_selector.substr(separator + 1));
-            auto* dataHandler = RE::TESDataHandler::GetSingleton();
-            if (plugin.empty() || !dataHandler ||
-                dataHandler->LookupLoadedModByName(plugin) ||
-                dataHandler->LookupLoadedLightModByName(plugin))
-            {
-                return std::nullopt;
-            }
-            return std::string(plugin);
+            auto applications = std::move(found->second);
+            state.applicationsByCell.erase(found);
+            return applications;
         }
 
         RE::TESForm* ResolveForm(
@@ -129,6 +129,10 @@ namespace MPL::ObjectOverrides
         state.global = {};
         state.profiles.clear();
         state.sources.clear();
+        {
+            std::scoped_lock lock(state.applicationLock);
+            state.applicationsByCell.clear();
+        }
         state.overrideCount = 0;
         state.globalDetailedLogging = false;
 
@@ -148,78 +152,33 @@ namespace MPL::ObjectOverrides
                 profile.global ? "global" : "windowSync");
             state.globalDetailedLogging |=
                 profile.global && profile.debugLogging;
-            std::map<std::string, std::size_t> missingSourcePlugins;
             std::size_t loadedOverrides = 0;
-            std::size_t skippedMissingSources = 0;
-            std::size_t invalidSources = 0;
-            std::size_t missingTargets = 0;
-            std::size_t invalidTargets = 0;
+            std::size_t skippedOverrides = 0;
             for (const auto& [sourceSelector, targetSelector] :
                 *profile.overrides)
             {
-                if (const auto plugin =
-                        MissingSourcePlugin(sourceSelector))
-                {
-                    ++missingSourcePlugins[*plugin];
-                    ++skippedMissingSources;
-                    continue;
-                }
                 auto* sourceForm = ResolveForm(sourceSelector);
                 if (!sourceForm)
                 {
-                    ++skippedMissingSources;
-                    if (profile.debugLogging)
-                    {
-                        logger::info(
-                            "[Object Overrides] [{}] Source '{}' was not found; skipped override to '{}'",
-                            logID,
-                            sourceSelector,
-                            targetSelector);
-                    }
+                    ++skippedOverrides;
                     continue;
                 }
                 auto* source = sourceForm->As<RE::TESBoundObject>();
                 if (!source)
                 {
-                    ++invalidSources;
-                    if (profile.debugLogging)
-                    {
-                        logger::warn(
-                            "[Object Overrides] [{}] Source '{}' resolved to {:08X}, but it is not a bound object; override to '{}' was not loaded",
-                            logID,
-                            sourceSelector,
-                            sourceForm->GetFormID(),
-                            targetSelector);
-                    }
+                    ++skippedOverrides;
                     continue;
                 }
                 auto* targetForm = ResolveForm(targetSelector);
                 if (!targetForm)
                 {
-                    ++missingTargets;
-                    if (profile.debugLogging)
-                    {
-                        logger::warn(
-                            "[Object Overrides] [{}] Target '{}' was not found; override from '{}' was not loaded",
-                            logID,
-                            targetSelector,
-                            sourceSelector);
-                    }
+                    ++skippedOverrides;
                     continue;
                 }
                 auto* target = targetForm->As<RE::TESBoundObject>();
                 if (!target)
                 {
-                    ++invalidTargets;
-                    if (profile.debugLogging)
-                    {
-                        logger::warn(
-                            "[Object Overrides] [{}] Target '{}' resolved to {:08X}, but it is not a bound object; override from '{}' was not loaded",
-                            logID,
-                            targetSelector,
-                            targetForm->GetFormID(),
-                            sourceSelector);
-                    }
+                    ++skippedOverrides;
                     continue;
                 }
                 const auto sourceID = source->GetFormID();
@@ -227,44 +186,11 @@ namespace MPL::ObjectOverrides
                 state.sources.insert(sourceID);
                 ++loadedOverrides;
             }
-            for (const auto& [plugin, count] : missingSourcePlugins)
-            {
-                logger::info(
-                    "[Object Overrides] [{}] Source plugin '{}' is not loaded; skipped {} object override(s)",
-                    logID,
-                    plugin,
-                    count);
-            }
-            if (invalidSources != 0 || missingTargets != 0 ||
-                invalidTargets != 0)
-            {
-                logger::warn(
-                    "[Object Overrides] [{}] Loaded {} object override(s), "
-                    "skipped_missing_sources={}, invalid_sources={}, "
-                    "missing_targets={}, invalid_targets={}",
-                    logID,
-                    loadedOverrides,
-                    skippedMissingSources,
-                    invalidSources,
-                    missingTargets,
-                    invalidTargets);
-            }
-            else if (skippedMissingSources != 0)
-            {
-                logger::info(
-                    "[Object Overrides] [{}] Loaded {} object override(s), "
-                    "skipped_missing_sources={}",
-                    logID,
-                    loadedOverrides,
-                    skippedMissingSources);
-            }
-            else
-            {
-                logger::info(
-                    "[Object Overrides] [{}] Loaded {} object override(s)",
-                    logID,
-                    loadedOverrides);
-            }
+            logger::info(
+                "[Object Overrides] [{}] Object override resolution: found={}, skipped={}",
+                logID,
+                loadedOverrides,
+                skippedOverrides);
         }
         state.overrideCount = state.global.forms.size();
         for (const auto& entry : state.profiles)
@@ -390,21 +316,14 @@ namespace MPL::ObjectOverrides
         a_reference->SetObjectReference(target);
         if (a_reference->GetBaseObject() != target)
         {
-            logger::warn(
-                "[Object Overrides] [{}] Override failed for reference {:08X}",
-                filteredOwner ? filteredOwner->id : "Global",
-                a_reference->GetFormID());
             return false;
         }
         if ((filteredOwner && filteredOwner->debugLogging) ||
             (!filteredOwner && GetState().globalDetailedLogging))
         {
-            logger::info(
-                "[Object Overrides] [{}] Applied override to reference {:08X}: {:08X} to {:08X}",
-                filteredOwner ? filteredOwner->id : "Global",
-                a_reference->GetFormID(),
-                source->GetFormID(),
-                target->GetFormID());
+            RecordApplication(
+                *a_reference,
+                filteredOwner ? filteredOwner->id : "Global");
         }
         return true;
     }
@@ -428,17 +347,13 @@ namespace MPL::ObjectOverrides
                     ApplyToReference(reference.get(), a_profiles) ? 1 : 0;
             }
         }
-        if (changed != 0 &&
-            (GetState().globalDetailedLogging || std::ranges::any_of(
-                a_profiles,
-                [](const auto& a_profile)
-                {
-                    return a_profile.debugLogging;
-                })))
+        for (const auto& [profile, applied] :
+            TakeApplications(a_cell->GetFormID()))
         {
             logger::info(
-                "[Object Overrides] Applied {} object override(s) in cell {:08X}",
-                changed,
+                "[Object Overrides] [{}] Successfully applied {} object override(s) in cell {:08X}",
+                profile,
+                applied,
                 a_cell->GetFormID());
         }
         return changed;
@@ -457,7 +372,6 @@ namespace MPL::ObjectOverrides::Patches
             std::vector<std::string> pluginExclusions;
             ObjectTransformMap transforms;
             ObjectPlacementMap placements;
-            bool detailedLogging = false;
         };
 
         struct ResolvedPlacement
@@ -569,8 +483,11 @@ namespace MPL::ObjectOverrides::Patches
             const std::string_view a_plugin)
         {
             return !a_plugin.empty() &&
-                   (a_dataHandler.LookupLoadedModByName(a_plugin) ||
-                       a_dataHandler.LookupLoadedLightModByName(a_plugin));
+                   HeliosphanLogic::IsPluginLoaded(
+                       a_dataHandler.LookupLoadedModByName(a_plugin) !=
+                           nullptr,
+                       a_dataHandler.LookupLoadedLightModByName(a_plugin) !=
+                           nullptr);
         }
 
         bool MatchesPluginFilters(const Profile& a_profile)
@@ -714,26 +631,6 @@ namespace MPL::ObjectOverrides::Patches
                     ToReferenceScale(*a_transform.scale);
                 applied = true;
             }
-            if (applied && a_profile.detailedLogging)
-            {
-                logger::info(
-                    "[Object Overrides] [{}] Applied object transform to reference {:08X}: base={:08X}, position=({:.3f}, {:.3f}, {:.3f}), rotation=({:.3f}, {:.3f}, {:.3f}), scale={:.2f}",
-                    a_profile.id,
-                    a_reference.GetFormID(),
-                    a_reference.GetBaseObject()->GetFormID(),
-                    a_reference.data.location.x,
-                    a_reference.data.location.y,
-                    a_reference.data.location.z,
-                    a_reference.data.angle.x * 180.0f /
-                        std::numbers::pi_v<float>,
-                    a_reference.data.angle.y * 180.0f /
-                        std::numbers::pi_v<float>,
-                    a_reference.data.angle.z * 180.0f /
-                        std::numbers::pi_v<float>,
-                    static_cast<float>(
-                        a_reference.GetReferenceRuntimeData().refScale) /
-                        100.0f);
-            }
             return applied;
         }
 
@@ -870,7 +767,7 @@ namespace MPL::ObjectOverrides::Patches
             state.placements.push_back(ResolvedPlacement{
                 .key = Lowercase(a_profile.id) + "\x1F" +
                        std::string(a_id),
-                .profile = a_profile.id,
+                .profile = a_profile.profile,
                 .id = std::string(a_id),
                 .owner = std::addressof(a_profile),
                 .cell = cell,
@@ -917,8 +814,7 @@ namespace MPL::ObjectOverrides::Patches
     void AddGroup(
         std::string a_profile,
         std::string a_id,
-        Group a_group,
-        const bool a_detailedLogging)
+        Group a_group)
     {
         auto& state = GetState();
         if (state.initialized ||
@@ -934,7 +830,6 @@ namespace MPL::ObjectOverrides::Patches
             .pluginExclusions = std::move(a_group.pluginExclusions),
             .transforms = std::move(a_group.transforms),
             .placements = std::move(a_group.placements),
-            .detailedLogging = a_detailedLogging,
         });
     }
 
@@ -1146,23 +1041,6 @@ namespace MPL::ObjectOverrides::Patches
         return true;
     }
 
-    void SetDetailedLogging(
-        const std::string_view a_profile,
-        const bool a_enabled)
-    {
-        for (auto& profile : GetState().profiles)
-        {
-            if (profile.profile.size() == a_profile.size() &&
-                _strnicmp(
-                    profile.profile.data(),
-                    a_profile.data(),
-                    a_profile.size()) == 0)
-            {
-                profile.detailedLogging = a_enabled;
-            }
-        }
-    }
-
     void BeginGameLoad()
     {
         auto& state = GetState();
@@ -1272,26 +1150,6 @@ namespace MPL::ObjectOverrides::Patches
                     .generation = state.loadGeneration,
                 });
             ++created;
-            if (placement.owner && placement.owner->detailedLogging)
-            {
-                logger::info(
-                    "[Object Overrides] [{}] Created object placement '{}' as reference {:08X}: base={:08X}, cell={:08X}, position=({:.3f}, {:.3f}, {:.3f}), rotation=({:.3f}, {:.3f}, {:.3f}), scale={:.2f}",
-                    placement.profile,
-                    placement.id,
-                    reference->GetFormID(),
-                    placement.base->GetFormID(),
-                    placement.cell->GetFormID(),
-                    placement.position.x,
-                    placement.position.y,
-                    placement.position.z,
-                    placement.rotation.x * 180.0f /
-                        std::numbers::pi_v<float>,
-                    placement.rotation.y * 180.0f /
-                        std::numbers::pi_v<float>,
-                    placement.rotation.z * 180.0f /
-                        std::numbers::pi_v<float>,
-                    placement.scale.value_or(1.0f));
-            }
         }
         if (created != 0 || failed != 0)
         {

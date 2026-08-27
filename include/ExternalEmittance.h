@@ -29,7 +29,7 @@ namespace MPL::ExternalEmittance
     bool RequiresPluginIndex();
     bool RequiresCompleteIndex();
     void InstallReferenceInitializationHook();
-    void ScheduleDirectReferenceReplay();
+    void ScheduleFinalReferenceInitialization();
     void PreparePlacementFilter();
     bool NeedsPlacement(RE::FormID a_reference, RE::FormID a_base);
     void Prepare(const PluginIndex::Result& a_index);

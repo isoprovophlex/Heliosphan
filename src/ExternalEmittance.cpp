@@ -1,6 +1,7 @@
 #include <CellClassifier.h>
 #include <ExternalEmittance.h>
 #include <FormResolver.h>
+#include <LifecycleTiming.h>
 #include <algorithm>
 #include <exception>
 #include <optional>
@@ -29,6 +30,7 @@ namespace MPL::ExternalEmittance
             std::unordered_set<RE::FormID> references;
             RE::FormID target = 0;
             bool filtered = false;
+            bool matchOriginalBase = false;
             bool detailedLogging = false;
         };
 
@@ -76,21 +78,17 @@ namespace MPL::ExternalEmittance
         };
 
         bool referenceInitializationHookInstalled = false;
+        bool referenceInitializationScheduled = false;
 
         bool ApplyPlan(RE::TESObjectREFR* a_reference, const Plan& a_plan);
 
-        void ReplayDirectReferences()
+        void ReplayPlannedReferences()
         {
             auto& state = GetState();
             std::size_t available = 0;
             std::size_t changed = 0;
-            for (const auto referenceID : state.directReferences)
+            for (const auto& [referenceID, plan] : state.startupPlans)
             {
-                const auto plan = state.startupPlans.find(referenceID);
-                if (plan == state.startupPlans.end())
-                {
-                    continue;
-                }
                 auto* reference =
                     RE::TESForm::LookupByID<RE::TESObjectREFR>(
                         referenceID);
@@ -99,13 +97,31 @@ namespace MPL::ExternalEmittance
                     continue;
                 }
                 ++available;
-                changed += ApplyPlan(reference, plan->second) ? 1 : 0;
+                if (plan.profile < state.profiles.size())
+                {
+                    const auto* existing = reference->extraList.GetByType<
+                        RE::ExtraEmittanceSource>();
+                    const auto* target = RE::TESForm::LookupByID(
+                        state.profiles[plan.profile].target);
+                    if (existing && target && existing->source == target)
+                    {
+                        continue;
+                    }
+                }
+                changed += ApplyPlan(reference, plan) ? 1 : 0;
             }
             logger::info(
-                "[External Emittance] Direct-reference startup replay completed: configured={}, available={}, changed={}",
-                state.directReferences.size(),
+                "[External Emittance] Final startup replay completed: planned={}, available={}, changed={}",
+                state.startupPlans.size(),
                 available,
                 changed);
+        }
+
+        void FinalizeReferenceInitialization()
+        {
+            InstallReferenceInitializationHook();
+            ReplayPlannedReferences();
+            LifecycleTiming::FinishStartup();
         }
 
         bool EqualsIgnoreCase(
@@ -163,7 +179,8 @@ namespace MPL::ExternalEmittance
             auto& state = GetState();
             const bool firstNotification =
                 state.emissiveLightReferences.insert(
-                    a_reference->GetFormID()).second;
+                                                 a_reference->GetFormID())
+                    .second;
             if (!firstNotification && !a_sourceChanged)
             {
                 return;
@@ -224,14 +241,6 @@ namespace MPL::ExternalEmittance
                 a_reference->extraList.Add(extra);
             }
 
-            if (profile.detailedLogging)
-            {
-                logger::info(
-                    "[External Emittance] [{}] Applied source {:08X} to reference {:08X}",
-                    profile.profile,
-                    profile.target,
-                    a_reference->GetFormID());
-            }
             NotifyClients(a_reference, true);
             return true;
         }
@@ -239,9 +248,16 @@ namespace MPL::ExternalEmittance
         std::optional<Plan> MatchPlan(
             const std::vector<std::string>& a_profileIDs,
             const RE::FormID a_reference,
-            const RE::FormID a_base)
+            const RE::FormID a_originalBase,
+            const RE::FormID a_effectiveBase)
         {
             const auto& profiles = GetState().profiles;
+            const auto matchesBase = [&](const ResolvedProfile& a_profile)
+            {
+                return a_profile.forms.contains(a_effectiveBase) ||
+                       (a_profile.matchOriginalBase &&
+                           a_profile.forms.contains(a_originalBase));
+            };
             for (std::size_t offset = 0; offset < profiles.size(); ++offset)
             {
                 const auto index = profiles.size() - 1 - offset;
@@ -261,7 +277,7 @@ namespace MPL::ExternalEmittance
                 {
                     if (profiles[index].filtered &&
                         EqualsIgnoreCase(profiles[index].profile, *id) &&
-                        profiles[index].forms.contains(a_base))
+                        matchesBase(profiles[index]))
                     {
                         return Plan{
                             .profile = index,
@@ -273,7 +289,7 @@ namespace MPL::ExternalEmittance
             {
                 const auto index = profiles.size() - 1 - offset;
                 if (!profiles[index].filtered &&
-                    profiles[index].forms.contains(a_base))
+                    matchesBase(profiles[index]))
                 {
                     return Plan{
                         .profile = index,
@@ -293,12 +309,16 @@ namespace MPL::ExternalEmittance
             }
             const auto& profileIDs =
                 CellClassifier::GetProfiles(cell->GetFormID());
+            const auto originalBase = CellClassifier::OriginalBase(
+                a_reference->GetFormID(),
+                base->GetFormID());
             const auto effectiveBase = CellClassifier::ProjectBase(
                 a_reference->GetFormID(),
                 base->GetFormID());
             return MatchPlan(
                 profileIDs,
                 a_reference->GetFormID(),
+                originalBase,
                 effectiveBase);
         }
 
@@ -370,18 +390,24 @@ namespace MPL::ExternalEmittance
             "[External Emittance] Final reference-initialization hook installed");
     }
 
-    void ScheduleDirectReferenceReplay()
+    void ScheduleFinalReferenceInitialization()
     {
-        if (GetState().directReferences.empty())
+        if (referenceInitializationScheduled)
         {
             return;
         }
+        if (GetState().profiles.empty())
+        {
+            LifecycleTiming::FinishStartup();
+            return;
+        }
+        referenceInitializationScheduled = true;
         auto* tasks = SKSE::GetTaskInterface();
         if (!tasks)
         {
             logger::warn(
-                "[External Emittance] SKSE task interface is unavailable; running the direct-reference startup replay immediately");
-            ReplayDirectReferences();
+                "[External Emittance] SKSE task interface is unavailable; finalizing reference initialization immediately");
+            FinalizeReferenceInitialization();
             return;
         }
         tasks->AddTask(
@@ -389,11 +415,11 @@ namespace MPL::ExternalEmittance
             {
                 if (auto* nextTasks = SKSE::GetTaskInterface())
                 {
-                    nextTasks->AddTask(ReplayDirectReferences);
+                    nextTasks->AddTask(FinalizeReferenceInitialization);
                 }
                 else
                 {
-                    ReplayDirectReferences();
+                    FinalizeReferenceInitialization();
                 }
             });
     }
@@ -456,11 +482,11 @@ namespace MPL::ExternalEmittance
         for (const auto& configured : state.configuredProfiles)
         {
             const auto cellContainsForms = configured.filtered ?
-                CellClassifier::GetResolvedForms(configured.profile) :
-                std::vector<RE::FormID>{};
+                                               CellClassifier::GetResolvedForms(configured.profile) :
+                                               std::vector<RE::FormID>{};
             const auto cellContainsReferences = configured.filtered ?
-                CellClassifier::GetResolvedReferences(configured.profile) :
-                std::vector<RE::FormID>{};
+                                                    CellClassifier::GetResolvedReferences(configured.profile) :
+                                                    std::vector<RE::FormID>{};
             if (configured.filtered &&
                 !configured.settings.cellContainsTarget.empty())
             {
@@ -490,6 +516,7 @@ namespace MPL::ExternalEmittance
                             cellContainsReferences.end()),
                         .target = target,
                         .filtered = true,
+                        .matchOriginalBase = true,
                         .detailedLogging = configured.detailedLogging,
                     });
                 }
@@ -524,13 +551,6 @@ namespace MPL::ExternalEmittance
                 if (!form)
                 {
                     ++missingForms;
-                    if (configured.detailedLogging)
-                    {
-                        logger::info(
-                            "[External Emittance] [{}] Optional source '{}' is unavailable",
-                            configured.profile,
-                            selector);
-                    }
                 }
                 else if (!IsSupportedBase(form))
                 {
@@ -587,6 +607,7 @@ namespace MPL::ExternalEmittance
             if (const auto plan = MatchPlan(
                     profileIDs,
                     formID,
+                    placement.base,
                     effectiveBase))
             {
                 state.startupPlans.insert_or_assign(formID, *plan);
@@ -632,8 +653,9 @@ namespace MPL::ExternalEmittance
             {
                 plan = std::addressof(
                     state.runtimePlans.insert_or_assign(
-                        a_reference->GetFormID(),
-                        *matched).first->second);
+                                          a_reference->GetFormID(),
+                                          *matched)
+                        .first->second);
             }
         }
         if (plan)

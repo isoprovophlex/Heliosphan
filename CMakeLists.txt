@@ -102,3 +102,44 @@ if(MSVC)
       "$<$<CONFIG:RELEASE>:/INCREMENTAL:NO;/OPT:REF;/OPT:ICF;/DEBUG:FULL>"
   )
 endif()
+
+option(HELIOSPHAN_BUILD_TESTS "Build Heliosphan development tests" OFF)
+
+if(HELIOSPHAN_BUILD_TESTS)
+  enable_testing()
+
+  add_executable(
+    HeliosphanTests
+    tests/HeliosphanTests.cpp
+    src/HeliosphanLogic.cpp
+    src/PluginRecords.cpp
+  )
+  target_compile_features(HeliosphanTests PRIVATE cxx_std_23)
+  target_include_directories(
+    HeliosphanTests
+    PRIVATE
+      ${CMAKE_CURRENT_SOURCE_DIR}/include
+  )
+  target_link_libraries(
+    HeliosphanTests
+    PRIVATE
+      nlohmann_json::nlohmann_json
+  )
+  target_compile_definitions(
+    HeliosphanTests
+    PRIVATE
+      HELIOSPHAN_TEST_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures"
+  )
+
+  if(MSVC)
+    target_compile_options(
+      HeliosphanTests
+      PRIVATE
+        /utf-8
+        /permissive-
+        /Zc:preprocessor
+    )
+  endif()
+
+  add_test(NAME HeliosphanTests COMMAND HeliosphanTests)
+endif()

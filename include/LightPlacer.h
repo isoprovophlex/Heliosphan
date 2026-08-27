@@ -29,7 +29,6 @@ namespace MPL::LightPlacer
         std::unordered_set<std::string> lights;
         std::string externalEmittance;
         std::vector<SourcePlacement> placements;
-        bool detailedLogging = false;
     };
 
     std::string NormalizeModelPath(std::string_view a_path);
@@ -39,8 +38,7 @@ namespace MPL::LightPlacer
     void AddProfile(
         std::string a_id,
         Settings a_settings,
-        bool a_filtered,
-        bool a_detailedLogging);
+        bool a_filtered);
     bool RequiresPluginIndex();
     bool RequiresCompleteInteriorIndex();
     void PreparePlacementFilter();

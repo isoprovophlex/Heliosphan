@@ -96,8 +96,7 @@ namespace MPL::WindowSync
         }
 
         std::vector<Heliosphan::WindowSyncProfile> ResolveProfiles(
-            const std::vector<std::string>& a_profileIDs,
-            const RE::FormID a_cell)
+            const std::vector<std::string>& a_profileIDs)
         {
             std::vector<Heliosphan::WindowSyncProfile> profiles;
             auto profileIDs = a_profileIDs;
@@ -109,14 +108,6 @@ namespace MPL::WindowSync
                         Heliosphan::GetWindowSyncProfile(id))
                 {
                     profiles.push_back(std::move(*profile));
-                }
-                else
-                {
-                    logger::warn(
-                        "[Window Sync] Classified cell {:08X} as profile '{}', "
-                        "but no enabled Heliosphan profile defines that ID",
-                        a_cell,
-                        id);
                 }
             }
             return profiles;
@@ -160,6 +151,7 @@ namespace MPL::WindowSync
             const auto message = std::format(
                 "{}: Region sync failed. Please report.",
                 a_profile.id);
+            logger::error("[Heliosphan] [Message Box] {}", message);
             RE::DebugMessageBox(message.c_str());
         }
 
@@ -171,54 +163,51 @@ namespace MPL::WindowSync
             {
                 return;
             }
-            const bool showSkyBefore =
-                a_cell->cellFlags.all(RE::TESObjectCELL::Flag::kShowSky);
-            const bool skyLightingBefore =
-                a_cell->cellFlags.all(RE::TESObjectCELL::Flag::kUseSkyLighting);
             const auto sunlightShadowsFlag =
                 static_cast<RE::TESObjectCELL::Flag>(1 << 15);
-            const bool sunlightShadowsBefore =
-                a_cell->cellFlags.all(sunlightShadowsFlag);
+            std::string appliedFlags;
+            const auto recordFlag =
+                [&](const std::string_view a_name, const bool a_value)
+            {
+                if (!appliedFlags.empty())
+                {
+                    appliedFlags += ", ";
+                }
+                appliedFlags += std::format("{}={}", a_name, a_value);
+            };
             if (a_profile.showSky)
             {
                 a_cell->cellFlags.set(
                     *a_profile.showSky,
                     RE::TESObjectCELL::Flag::kShowSky);
+                recordFlag("ShowSky", *a_profile.showSky);
             }
             if (a_profile.useSkyLighting)
             {
                 a_cell->cellFlags.set(
                     *a_profile.useSkyLighting,
                     RE::TESObjectCELL::Flag::kUseSkyLighting);
+                recordFlag("UseSkyLighting", *a_profile.useSkyLighting);
             }
             if (a_profile.sunlightShadows)
             {
                 a_cell->cellFlags.set(
                     *a_profile.sunlightShadows,
                     sunlightShadowsFlag);
+                recordFlag(
+                    "SunlightShadows",
+                    *a_profile.sunlightShadows);
             }
-            if ((a_profile.showSky &&
-                    showSkyBefore != *a_profile.showSky) ||
-                (a_profile.useSkyLighting &&
-                    skyLightingBefore != *a_profile.useSkyLighting) ||
-                (a_profile.sunlightShadows &&
-                    sunlightShadowsBefore != *a_profile.sunlightShadows))
+            if (a_profile.debugLogging && !appliedFlags.empty())
             {
-                LogDetailed(
-                    a_profile,
-                    std::format(
-                        "Pre-applied cell sky flags to indexed interior {:08X}: "
-                        "ShowSky {} -> {}, UseSkyLighting {} -> {}, "
-                        "SunlightShadows {} -> {}",
-                        a_cell->GetFormID(),
-                        showSkyBefore,
-                        a_profile.showSky.value_or(showSkyBefore),
-                        skyLightingBefore,
-                        a_profile.useSkyLighting.value_or(
-                            skyLightingBefore),
-                        sunlightShadowsBefore,
-                        a_profile.sunlightShadows.value_or(
-                            sunlightShadowsBefore)));
+                logger::info(
+                    "[Window Sync] [{}] Applied cell flags to '{}' [{:08X}]: {}",
+                    a_profile.id,
+                    a_cell->GetFormEditorID() ?
+                        a_cell->GetFormEditorID() :
+                        "<no EditorID>",
+                    a_cell->GetFormID(),
+                    appliedFlags);
             }
         }
 
@@ -279,11 +268,7 @@ namespace MPL::WindowSync
             PendingTransition& a_transition,
             const std::vector<std::string>& a_profileIDs)
         {
-            auto profiles = ResolveProfiles(
-                a_profileIDs,
-                a_transition.destination ?
-                    a_transition.destination->GetFormID() :
-                    0);
+            auto profiles = ResolveProfiles(a_profileIDs);
             if (profiles.empty())
             {
                 return false;
@@ -318,11 +303,6 @@ namespace MPL::WindowSync
                 if (sourceRegion)
                 {
                     a_transition.usedDefaultRegion = true;
-                    LogDetailed(
-                        *syncProfile,
-                        std::format(
-                            "Using configured fallback region '{}' because no runtime region is available",
-                            syncProfile->fallbackRegion));
                 }
                 else
                 {
@@ -356,12 +336,6 @@ namespace MPL::WindowSync
                 if (targetRegion)
                 {
                     a_transition.usedDefaultRegion = true;
-                    LogDetailed(
-                        *syncProfile,
-                        std::format(
-                            "Using configured fallback region '{}' because synchronized region '{}' is unavailable",
-                            syncProfile->fallbackRegion,
-                            targetEditorID));
                 }
                 else
                 {
@@ -389,10 +363,12 @@ namespace MPL::WindowSync
             LogDetailed(
                 *syncProfile,
                 std::format(
-                    "Applied region '{}' and {} Window Sync layer(s) to interior {:08X}",
+                    "Window Sync applied: cell={:08X}, profile={}, region='{}', layers={}, fallback={}",
+                    a_transition.destination->GetFormID(),
+                    syncProfile->id,
                     RegionEditorID(targetRegion),
                     profiles.size(),
-                    a_transition.destination->GetFormID()));
+                    a_transition.usedDefaultRegion));
             return true;
         }
 
@@ -429,23 +405,6 @@ namespace MPL::WindowSync
                     {
                         if (auto* sky = RE::Sky::GetSingleton())
                         {
-                            auto* previousRegion = sky->region;
-                            LogDetailed(
-                                *transition.profile,
-                                std::format(
-                                    "Sky::region assignment diagnostic before Weather Sync scheduling: "
-                                    "engine region='{}', destination region='{}', pointer changed={}, "
-                                    "cell attached={}, loaded data={}, active override={:08X}",
-                                    previousRegion ?
-                                        RegionEditorID(previousRegion) :
-                                        "<none>",
-                                    RegionEditorID(extra->skyRegion),
-                                    previousRegion != extra->skyRegion,
-                                    transition.destination->IsAttached(),
-                                    transition.destination->GetRuntimeData().loadedData != nullptr,
-                                    sky->overrideWeather ?
-                                        sky->overrideWeather->GetFormID() :
-                                        0));
                             sky->region = extra->skyRegion;
                         }
                     }
@@ -489,8 +448,7 @@ namespace MPL::WindowSync
             std::vector<Heliosphan::WindowSyncProfile> profiles;
             if (!a_profileIDs.empty())
             {
-                profiles =
-                    ResolveProfiles(a_profileIDs, a_cell->GetFormID());
+                profiles = ResolveProfiles(a_profileIDs);
                 for (const auto& profile : profiles)
                 {
                     ApplyIndexedCellSettings(a_cell, profile);
@@ -690,7 +648,7 @@ namespace MPL::WindowSync
             CellClassifier::GetProfiles(cell->GetFormID());
         ObjectOverrides::ApplyToReference(
             a_reference,
-            ResolveProfiles(profileIDs, cell->GetFormID()));
+            ResolveProfiles(profileIDs));
     }
 
     void Initialize()

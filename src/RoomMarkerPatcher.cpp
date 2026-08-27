@@ -140,12 +140,6 @@ namespace MPL::RoomMarkerPatcher
             }
             if (const auto* plugin = ExcludedPlugin(a_reference, cell))
             {
-                LogDetailed(
-                    "Skipped RoomMarker {:08X} in cell {:08X} because source plugin "
-                    "'{}' is excluded from cleaning",
-                    a_reference->GetFormID(),
-                    cell->GetFormID(),
-                    plugin->GetFilename());
                 return result;
             }
 
@@ -160,15 +154,6 @@ namespace MPL::RoomMarkerPatcher
             roomData->data->lightingTemplate = nullptr;
             roomData->data->imageSpace = nullptr;
 
-            if (result.Changed())
-            {
-                LogDetailed(
-                    "Cleaned RoomMarker {:08X} in cell {:08X}: lighting template={}, image space={}",
-                    a_reference->GetFormID(),
-                    cell->GetFormID(),
-                    result.lightingTemplate,
-                    result.imageSpace);
-            }
             return result;
         }
 
@@ -269,6 +254,10 @@ namespace MPL::RoomMarkerPatcher
         }
 
         const auto result = a_enabled ? CleanCellReferences(a_cell) : CellCleanResult{};
+        if (result.cleaned == 0)
+        {
+            return;
+        }
         LogDetailed(
             "RoomMarker cleaning {} for cell {:08X}; checked {} initialized marker(s), cleaned {}, removed {} lighting template(s) and {} image space(s)",
             a_enabled ? "enabled" : "disabled",

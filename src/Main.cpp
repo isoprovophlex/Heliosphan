@@ -1,15 +1,16 @@
 #include <AutoCSTonemapping.h>
 #include <ExternalEmittance.h>
-#include <LumaClient.h>
+#include <Heliosphan.h>
+#include <HeliosphanAPI.h>
+#include <LifecycleTiming.h>
 #include <LightPlacer.h>
+#include <LumaClient.h>
 #include <ObjectOverrides.h>
 #include <Papyrus.h>
 #include <Plugin.h>
 #include <REL/Version.h>
 #include <SKSE/API.h>
 #include <WeatherRuntime.h>
-#include <Heliosphan.h>
-#include <HeliosphanAPI.h>
 #include <WindowSync.h>
 
 namespace
@@ -25,48 +26,55 @@ namespace
         switch (a_message->type)
         {
         case SKSE::MessagingInterface::kPostLoad:
-            lumaReady = MPL::LumaClient::Load();
-            if (!lumaReady)
             {
-                logger::critical(
-                    "Heliosphan requires LumaUtil API version {}; "
-                    "Heliosphan will remain inactive",
-                    MPL::LumaAPI::kVersion);
+                lumaReady = MPL::LumaClient::Load();
+                if (!lumaReady)
+                {
+                    logger::critical(
+                        "Heliosphan requires LumaUtil API version {}; "
+                        "Heliosphan will remain inactive",
+                        MPL::LumaAPI::kVersion);
+                    break;
+                }
+                MPL::Heliosphan::LoadConfiguration();
+                MPL::LifecycleTiming::LogStartupStart();
                 break;
             }
-            MPL::Heliosphan::LoadConfiguration();
-            break;
         case SKSE::MessagingInterface::kDataLoaded:
-            if (!lumaReady)
             {
+                if (!lumaReady)
+                {
+                    break;
+                }
+                MPL::Heliosphan::OnDataLoaded();
+                MPL::WindowSync::Initialize();
+                MPL::ExternalEmittance::ScheduleFinalReferenceInitialization();
+                if (auto* tasks = SKSE::GetTaskInterface())
+                {
+                    tasks->AddTask(
+                        []
+                        {
+                            MPL::AutoCSTonemapping::ApplyStartup();
+                        });
+                }
+                else
+                {
+                    logger::warn(
+                        "SKSE task interface is unavailable; Auto CS "
+                        "Tonemapping will run without deferred startup ordering");
+                    MPL::AutoCSTonemapping::ApplyStartup();
+                }
                 break;
             }
-            MPL::Heliosphan::OnDataLoaded();
-            MPL::WindowSync::Initialize();
-            MPL::ExternalEmittance::InstallReferenceInitializationHook();
-            MPL::ExternalEmittance::ScheduleDirectReferenceReplay();
-            if (auto* tasks = SKSE::GetTaskInterface())
-            {
-                tasks->AddTask(
-                    []
-                    {
-                        MPL::AutoCSTonemapping::ApplyStartup();
-                    });
-            }
-            else
-            {
-                logger::warn(
-                    "SKSE task interface is unavailable; Auto CS "
-                    "Tonemapping will run without deferred startup ordering");
-                MPL::AutoCSTonemapping::ApplyStartup();
-            }
-            break;
         case SKSE::MessagingInterface::kPreLoadGame:
-            MPL::ObjectOverrides::Patches::BeginGameLoad();
-            MPL::ExternalEmittance::BeginGameLoad();
-            MPL::WindowSync::Reset();
-            MPL::Heliosphan::Reset();
-            break;
+            {
+                MPL::LifecycleTiming::BeginGameLoad();
+                MPL::ObjectOverrides::Patches::BeginGameLoad();
+                MPL::ExternalEmittance::BeginGameLoad();
+                MPL::WindowSync::Reset();
+                MPL::Heliosphan::Reset();
+                break;
+            }
         case SKSE::MessagingInterface::kPostLoadGame:
         case SKSE::MessagingInterface::kNewGame:
             if (lumaReady)
@@ -100,8 +108,8 @@ namespace
             {
                 MPL::WindowSync::Load(
                     a_serialization,
-                    version,
-                    length);
+                version,
+                length);
             }
         }
     }
@@ -137,6 +145,7 @@ Heliosphan_RequestAPI(
 
 SKSEPluginLoad(const SKSE::LoadInterface* a_skse)
 {
+    MPL::LifecycleTiming::BeginStartup();
     SKSE::Init(a_skse);
     logger::info("Game version : {}", a_skse->RuntimeVersion().string());
     SKSE::GetPapyrusInterface()->Register(MPL::Papyrus::Bind);

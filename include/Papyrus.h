@@ -1,11 +1,22 @@
 #pragma once
 
 #include <AutoCSTonemapping.h>
-#include <WeatherRuntime.h>
 #include <Heliosphan.h>
+#include <WeatherRuntime.h>
 
 namespace MPL::Papyrus
 {
+    inline bool LogNotificationFailure(
+        const bool a_succeeded,
+        const std::string_view a_message)
+    {
+        if (!a_succeeded)
+        {
+            logger::error("[Heliosphan] [Notification] {}", a_message);
+        }
+        return a_succeeded;
+    }
+
     inline void SetWeatherInstant(
         RE::StaticFunctionTag*,
         RE::TESWeather* a_weather,
@@ -43,14 +54,23 @@ namespace MPL::Papyrus
         return Heliosphan::GetProfileNotifications(a_profile);
     }
 
+    inline bool GetWeatherSyncSpeedLogging(
+        RE::StaticFunctionTag*,
+        std::string a_profile)
+    {
+        return Heliosphan::GetProfileSpeedLogging(a_profile);
+    }
+
     inline bool SetWeatherSyncDetailedLogging(
         RE::StaticFunctionTag*,
         std::string a_profile,
         const bool a_enabled)
     {
-        return Heliosphan::SetProfileDetailedLogging(
-            a_profile,
-            a_enabled);
+        return LogNotificationFailure(
+            Heliosphan::SetProfileDetailedLogging(
+                a_profile,
+                a_enabled),
+            "Helios: Could not update HeliosphanSettings.json");
     }
 
     inline bool SetWeatherSyncNotifications(
@@ -58,9 +78,23 @@ namespace MPL::Papyrus
         std::string a_profile,
         const bool a_enabled)
     {
-        return Heliosphan::SetProfileNotifications(
-            a_profile,
-            a_enabled);
+        return LogNotificationFailure(
+            Heliosphan::SetProfileNotifications(
+                a_profile,
+                a_enabled),
+            "Helios: Could not update HeliosphanSettings.json");
+    }
+
+    inline bool SetWeatherSyncSpeedLogging(
+        RE::StaticFunctionTag*,
+        std::string a_profile,
+        const bool a_enabled)
+    {
+        return LogNotificationFailure(
+            Heliosphan::SetProfileSpeedLogging(
+                a_profile,
+                a_enabled),
+            "Helios: Could not update HeliosphanSettings.json");
     }
 
     inline bool GetAutoCSTonemapping(
@@ -75,9 +109,11 @@ namespace MPL::Papyrus
         std::string a_profile,
         const bool a_enabled)
     {
-        return AutoCSTonemapping::SetProfileEnabled(
-            a_profile,
-            a_enabled);
+        return LogNotificationFailure(
+            AutoCSTonemapping::SetProfileEnabled(
+                a_profile,
+                a_enabled),
+            "Helios: Could not update Helios.json");
     }
 
     inline bool Bind(RE::BSScript::IVirtualMachine* a_vm)
@@ -95,6 +131,10 @@ namespace MPL::Papyrus
             "Heliosphan",
             GetWeatherSyncNotifications);
         a_vm->RegisterFunction(
+            "GetWeatherSyncSpeedLogging",
+            "Heliosphan",
+            GetWeatherSyncSpeedLogging);
+        a_vm->RegisterFunction(
             "SetWeatherSyncDetailedLogging",
             "Heliosphan",
             SetWeatherSyncDetailedLogging);
@@ -102,6 +142,10 @@ namespace MPL::Papyrus
             "SetWeatherSyncNotifications",
             "Heliosphan",
             SetWeatherSyncNotifications);
+        a_vm->RegisterFunction(
+            "SetWeatherSyncSpeedLogging",
+            "Heliosphan",
+            SetWeatherSyncSpeedLogging);
         a_vm->RegisterFunction(
             "GetAutoCSTonemapping",
             "Heliosphan",

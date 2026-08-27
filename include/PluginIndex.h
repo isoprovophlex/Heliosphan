@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <PluginRecords.h>
 #include <RE/Skyrim.h>
 #include <string>
 #include <unordered_map>
@@ -11,13 +12,7 @@
 
 namespace MPL::PluginIndex
 {
-    struct Placement
-    {
-        RE::FormID reference = 0;
-        RE::FormID base = 0;
-        RE::FormID cell = 0;
-        bool deleted = false;
-    };
+    using Placement = PluginRecords::Placement;
 
     struct Result
     {
