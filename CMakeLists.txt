@@ -37,9 +37,6 @@ endif()
 set(CMAKE_INTERPROCEDURAL_OPTIMIZATION ON)
 set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_DEBUG OFF)
 
-set(BUILD_TESTS OFF CACHE BOOL "Disable CommonLibSSE tests" FORCE)
-add_subdirectory(extern/CommonLibSSE)
-
 include(CMake/headerlist.cmake)
 include(CMake/sourcelist.cmake)
 
@@ -66,6 +63,8 @@ target_include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}/extern/MMSF/include
 )
 
+find_package(CommonLibSSE CONFIG REQUIRED)
+find_package(DirectXTK CONFIG REQUIRED)
 find_package(reflectcpp CONFIG REQUIRED)
 find_package(nlohmann_json CONFIG REQUIRED)
 find_package(ZLIB REQUIRED)
@@ -123,13 +122,16 @@ if(HELIOSPHAN_BUILD_TESTS)
   target_link_libraries(
     HeliosphanTests
     PRIVATE
+      CommonLibSSE::CommonLibSSE
       nlohmann_json::nlohmann_json
   )
   target_compile_definitions(
     HeliosphanTests
     PRIVATE
+      ENABLE_COMMONLIBSSE_TESTING=1
       HELIOSPHAN_TEST_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures"
   )
+  target_precompile_headers(HeliosphanTests PRIVATE include/PCH.h)
 
   if(MSVC)
     target_compile_options(
@@ -142,4 +144,39 @@ if(HELIOSPHAN_BUILD_TESTS)
   endif()
 
   add_test(NAME HeliosphanTests COMMAND HeliosphanTests)
+
+  set(
+    HELIOSPHAN_ADDRESS_LIBRARY_1_7_99
+    ""
+    CACHE FILEPATH
+    "Path to the exact Skyrim 1.7.99 Address Library binary"
+  )
+
+  if(NOT HELIOSPHAN_ADDRESS_LIBRARY_1_7_99 AND DEFINED VCPKG_INSTALLED_DIR AND DEFINED VCPKG_TARGET_TRIPLET)
+    find_file(
+      HELIOSPHAN_PACKAGED_ADDRESS_LIBRARY_1_7_99
+      NAMES versionlib-1-7-99-0.bin
+      PATHS "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/share/commonlibsse-ng/test-data"
+      NO_DEFAULT_PATH
+    )
+    if(HELIOSPHAN_PACKAGED_ADDRESS_LIBRARY_1_7_99)
+      set(
+        HELIOSPHAN_ADDRESS_LIBRARY_1_7_99
+        "${HELIOSPHAN_PACKAGED_ADDRESS_LIBRARY_1_7_99}"
+        CACHE FILEPATH
+        "Path to the exact Skyrim 1.7.99 Address Library binary"
+        FORCE
+      )
+    endif()
+  endif()
+
+  if(HELIOSPHAN_ADDRESS_LIBRARY_1_7_99)
+    target_compile_definitions(
+      HeliosphanTests
+      PRIVATE
+        HELIOSPHAN_ADDRESS_LIBRARY_1_7_99="${HELIOSPHAN_ADDRESS_LIBRARY_1_7_99}"
+    )
+  else()
+    message(WARNING "The exact Skyrim 1.7.99 Address Library loader test is unavailable.")
+  endif()
 endif()
