@@ -10,12 +10,6 @@
             "minimumVersion":  "1.8.0.0",
             "Required":  true,
             "notification":  "Helios requires Luma Utility 1.8 or newer."
-        },
-        {
-            "id":  "XEMIUtil",
-            "minimumVersion":  "1.9.0.0",
-            "Required":  true,
-            "notification":  "Helios requires XEMI Utility 1.9 or newer."
         }
     ]
 }

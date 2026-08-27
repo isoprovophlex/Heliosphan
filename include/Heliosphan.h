@@ -14,12 +14,12 @@ namespace RE
     class TESWeather;
 }  // namespace RE
 
-namespace MPL::API
+namespace MPL::API::MMSF
 {
-    class ServiceMap;
+    class Interface;
 }
 
-namespace MPL::WeatherSync
+namespace MPL::Heliosphan
 {
     struct WindowSyncProfile
     {
@@ -37,10 +37,11 @@ namespace MPL::WeatherSync
         bool debugLogging = false;
     };
 
-    struct WindowObjectOverrideProfileView
+    struct ObjectOverrideProfileView
     {
         std::string_view id;
-        const std::map<std::string, std::string>* objectOverrides = nullptr;
+        const std::map<std::string, std::string>* overrides = nullptr;
+        bool global = false;
         bool debugLogging = false;
     };
 
@@ -52,13 +53,15 @@ namespace MPL::WeatherSync
     void LoadConfiguration();
     void RecordCellPatch(RE::TESObjectCELL* a_cell, std::string_view a_provider, bool a_hasSkylight);
     bool RecordWindowSyncCell(RE::TESObjectCELL*, std::string_view a_profile);
+    void PrepareWindowSyncProfilePriorities();
+    void SortWindowSyncProfileIDs(std::vector<std::string>& a_profiles);
     std::optional<WindowSyncProfile> GetWindowSyncProfile(std::string_view a_profile);
     std::vector<WindowSyncProfile> GetWindowSyncProfiles();
-    std::vector<WindowObjectOverrideProfileView> GetWindowObjectOverrideProfiles();
-    std::size_t GetWindowObjectOverrideRuleCount();
+    std::vector<ObjectOverrideProfileView> GetObjectOverrideProfiles();
+    std::size_t GetObjectOverrideRuleCount();
     bool IsSynchronizedRegion(std::string_view a_editorID);
     std::string BaseRegionEditorID(std::string_view a_editorID);
-    API::ServiceMap* GetMMSFAPI();
+    API::MMSF::Interface* GetMMSFAPI();
     RE::TESWeather* CaptureSourceWeather();
     void OnCellChanged(
         const RE::TESObjectCELL* a_cell,
@@ -67,4 +70,4 @@ namespace MPL::WeatherSync
     void OnDataLoaded();
     void OnGameLoaded();
     void Reset();
-}  // namespace MPL::WeatherSync
+}  // namespace MPL::Heliosphan

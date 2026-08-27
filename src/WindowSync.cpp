@@ -1,11 +1,13 @@
-#include <WindowObjectOverrides.h>
+#include <CellClassifier.h>
+#include <ExternalEmittance.h>
+#include <LightPlacer.h>
+#include <ObjectOverrides.h>
+#include <PluginIndex.h>
 #include <LumaClient.h>
 #include <RegionRuntime.h>
 #include <RoomMarkerPatcher.h>
-#include <WeatherSync.h>
+#include <Heliosphan.h>
 #include <WindowSync.h>
-#include <XEMI_API.h>
-#include <XEMI_WindowObjectOverrideAPI.h>
 #include <algorithm>
 #include <optional>
 #include <string>
@@ -22,7 +24,7 @@ namespace MPL::WindowSync
             RE::TESObjectCELL* destination = nullptr;
             RE::TESWeather* sourceWeather = nullptr;
             RE::TESRegion* sourceRegion = nullptr;
-            std::optional<WeatherSync::WindowSyncProfile> profile;
+            std::optional<Heliosphan::WindowSyncProfile> profile;
             bool usedDefaultRegion = false;
             bool resolved = false;
             bool finishCalled = false;
@@ -36,10 +38,11 @@ namespace MPL::WindowSync
 
         struct State
         {
-            HMODULE module = nullptr;
-            const XEMIAPI::Interface* api = nullptr;
             bool hasWindowProfiles = false;
             bool collectingCellInventory = false;
+            bool initializationRequested = false;
+            bool classificationApplied = false;
+            bool startupPreparationStarted = false;
             RE::FormID lastKnownRegion = 0;
             std::optional<PendingTransition> pending;
             std::vector<CellInventoryEntry> cellInventory;
@@ -51,9 +54,9 @@ namespace MPL::WindowSync
             return state;
         }
 
-        MPL::API::ServiceMap* MMSF()
+        MPL::API::MMSF::Interface* MMSF()
         {
-            return WeatherSync::GetMMSFAPI();
+            return Heliosphan::GetMMSFAPI();
         }
 
         std::string RegionEditorID(RE::TESRegion* a_region)
@@ -83,7 +86,7 @@ namespace MPL::WindowSync
         }
 
         void LogDetailed(
-            const WeatherSync::WindowSyncProfile& a_profile,
+            const Heliosphan::WindowSyncProfile& a_profile,
             const std::string_view a_message)
         {
             if (a_profile.debugLogging)
@@ -92,74 +95,35 @@ namespace MPL::WindowSync
             }
         }
 
-        std::vector<WeatherSync::WindowSyncProfile> ResolveProfiles(
-            const XEMIAPI::CellResult& a_result,
+        std::vector<Heliosphan::WindowSyncProfile> ResolveProfiles(
+            const std::vector<std::string>& a_profileIDs,
             const RE::FormID a_cell)
         {
-            std::vector<WeatherSync::WindowSyncProfile> profiles;
-            if (a_result.profileCount != 0 &&
-                !a_result.profiles)
+            std::vector<Heliosphan::WindowSyncProfile> profiles;
+            auto profileIDs = a_profileIDs;
+            Heliosphan::SortWindowSyncProfileIDs(profileIDs);
+            profiles.reserve(profileIDs.size());
+            for (const auto& id : profileIDs)
             {
-                logger::error(
-                    "[Window Sync] XEMIUtil returned an invalid cell classification result for {:08X}",
-                    a_cell);
-                return profiles;
-            }
-            if (XEMIAPI::HasFlag(
-                    a_result,
-                    XEMIAPI::CellResultFlag::
-                        kProfilesTruncated))
-            {
-                logger::warn(
-                    "[Window Sync] XEMIUtil truncated the cell classification profile list for {:08X}",
-                    a_cell);
-            }
-            const auto count =
-                static_cast<std::size_t>(
-                    a_result.profileCount);
-            profiles.reserve(count);
-            for (std::size_t index = 0; index < count; ++index)
-            {
-                if (!a_result.profiles[index])
-                {
-                    continue;
-                }
-                const std::string_view id{
-                    a_result.profiles[index] };
                 if (auto profile =
-                        WeatherSync::GetWindowSyncProfile(id))
+                        Heliosphan::GetWindowSyncProfile(id))
                 {
                     profiles.push_back(std::move(*profile));
                 }
                 else
                 {
                     logger::warn(
-                        "[Window Sync] XEMIUtil classified cell {:08X} as profile '{}', "
-                        "but no enabled Weather Sync layer defines that ID",
+                        "[Window Sync] Classified cell {:08X} as profile '{}', "
+                        "but no enabled Heliosphan profile defines that ID",
                         a_cell,
                         id);
                 }
             }
-            std::ranges::sort(
-                profiles,
-                [](const auto& a_left, const auto& a_right)
-                {
-                    if (a_left.usesPluginLoadOrder !=
-                        a_right.usesPluginLoadOrder)
-                    {
-                        return !a_left.usesPluginLoadOrder;
-                    }
-                    if (a_left.loadOrder != a_right.loadOrder)
-                    {
-                        return a_left.loadOrder < a_right.loadOrder;
-                    }
-                    return a_left.id < a_right.id;
-                });
             return profiles;
         }
 
         RE::TESRegion* ResolveTargetRegion(
-            const WeatherSync::WindowSyncProfile& a_profile,
+            const Heliosphan::WindowSyncProfile& a_profile,
             RE::TESRegion* a_sourceRegion)
         {
             auto sourceEditorID = RegionEditorID(a_sourceRegion);
@@ -167,12 +131,12 @@ namespace MPL::WindowSync
             {
                 return nullptr;
             }
-            const auto baseEditorID = WeatherSync::BaseRegionEditorID(sourceEditorID);
+            const auto baseEditorID = Heliosphan::BaseRegionEditorID(sourceEditorID);
             return LookupRegion(a_profile.regionPrefix + baseEditorID);
         }
 
         RE::TESRegion* ResolveFallbackTargetRegion(
-            const WeatherSync::WindowSyncProfile& a_profile)
+            const Heliosphan::WindowSyncProfile& a_profile)
         {
             if (a_profile.fallbackRegion.empty())
             {
@@ -183,7 +147,7 @@ namespace MPL::WindowSync
             {
                 return nullptr;
             }
-            if (WeatherSync::IsSynchronizedRegion(RegionEditorID(fallbackRegion)))
+            if (Heliosphan::IsSynchronizedRegion(RegionEditorID(fallbackRegion)))
             {
                 return fallbackRegion;
             }
@@ -191,7 +155,7 @@ namespace MPL::WindowSync
         }
 
         void ShowRegionSyncFailure(
-            const WeatherSync::WindowSyncProfile& a_profile)
+            const Heliosphan::WindowSyncProfile& a_profile)
         {
             const auto message = std::format(
                 "{}: Region sync failed. Please report.",
@@ -201,7 +165,7 @@ namespace MPL::WindowSync
 
         void ApplyCellFlags(
             RE::TESObjectCELL* a_cell,
-            const WeatherSync::WindowSyncProfile& a_profile)
+            const Heliosphan::WindowSyncProfile& a_profile)
         {
             if (!a_cell)
             {
@@ -260,14 +224,14 @@ namespace MPL::WindowSync
 
         void ApplyIndexedCellSettings(
             RE::TESObjectCELL* a_cell,
-            const WeatherSync::WindowSyncProfile& a_profile)
+            const Heliosphan::WindowSyncProfile& a_profile)
         {
             ApplyCellFlags(a_cell, a_profile);
         }
 
         void ApplyRoomMarkerCleaning(
             RE::TESObjectCELL* a_cell,
-            const std::vector<WeatherSync::WindowSyncProfile>& a_profiles)
+            const std::vector<Heliosphan::WindowSyncProfile>& a_profiles)
         {
             std::vector<std::string> excludedPlugins;
             bool enabled = false;
@@ -313,10 +277,10 @@ namespace MPL::WindowSync
 
         bool ResolveMatchedDestination(
             PendingTransition& a_transition,
-            const XEMIAPI::CellResult& a_result)
+            const std::vector<std::string>& a_profileIDs)
         {
             auto profiles = ResolveProfiles(
-                a_result,
+                a_profileIDs,
                 a_transition.destination ?
                     a_transition.destination->GetFormID() :
                     0);
@@ -382,7 +346,7 @@ namespace MPL::WindowSync
             {
                 const auto targetEditorID =
                     syncProfile->regionPrefix +
-                    WeatherSync::BaseRegionEditorID(RegionEditorID(sourceRegion));
+                    Heliosphan::BaseRegionEditorID(RegionEditorID(sourceRegion));
                 logger::warn(
                     "[Window Sync] [{}] Could not find the synchronized region '{}' for cell {:08X}",
                     syncProfile->id,
@@ -414,7 +378,7 @@ namespace MPL::WindowSync
             }
 
             ApplyCellSettings(a_transition.destination, targetRegion);
-            if (!WeatherSync::RecordWindowSyncCell(
+            if (!Heliosphan::RecordWindowSyncCell(
                     a_transition.destination,
                     syncProfile->id))
             {
@@ -434,14 +398,14 @@ namespace MPL::WindowSync
 
         void ResolveTransition(
             PendingTransition& a_transition,
-            const XEMIAPI::CellResult& a_result)
+            const std::vector<std::string>& a_profileIDs)
         {
             a_transition.profile.reset();
-            if (a_result.status == XEMIAPI::CellStatus::kMatched)
+            if (!a_profileIDs.empty())
             {
-                ResolveMatchedDestination(a_transition, a_result);
+                ResolveMatchedDestination(a_transition, a_profileIDs);
             }
-            a_transition.resolved = a_result.status != XEMIAPI::CellStatus::kUnknown;
+            a_transition.resolved = true;
         }
 
         void DispatchResolvedTransition()
@@ -487,7 +451,7 @@ namespace MPL::WindowSync
                     }
                 }
             }
-            WeatherSync::OnCellChanged(
+            Heliosphan::OnCellChanged(
                 transition.destination,
                 transition.sourceWeather,
                 transition.usedDefaultRegion);
@@ -495,30 +459,20 @@ namespace MPL::WindowSync
 
         void OnCellClassified(
             RE::TESObjectCELL* a_cell,
-            const XEMIAPI::CellResult* a_result)
+            const std::vector<std::string>& a_profileIDs)
         {
             auto& state = GetState();
-            if (!a_cell || !a_result)
+            if (!a_cell)
             {
                 return;
             }
             if (state.collectingCellInventory &&
-                a_result->status == XEMIAPI::CellStatus::kMatched)
+                !a_profileIDs.empty())
             {
                 CellInventoryEntry entry{
                     .cell = a_cell->GetFormID(),
+                    .profiles = a_profileIDs,
                 };
-                entry.profiles.reserve(a_result->profileCount);
-                for (std::size_t index = 0;
-                     index < a_result->profileCount;
-                     ++index)
-                {
-                    if (a_result->profiles && a_result->profiles[index])
-                    {
-                        entry.profiles.emplace_back(
-                            a_result->profiles[index]);
-                    }
-                }
                 const auto existing = std::ranges::find(
                     state.cellInventory,
                     entry.cell,
@@ -532,19 +486,19 @@ namespace MPL::WindowSync
                     existing->profiles = std::move(entry.profiles);
                 }
             }
-            std::vector<WeatherSync::WindowSyncProfile> profiles;
-            if (a_result->status == XEMIAPI::CellStatus::kMatched)
+            std::vector<Heliosphan::WindowSyncProfile> profiles;
+            if (!a_profileIDs.empty())
             {
                 profiles =
-                    ResolveProfiles(*a_result, a_cell->GetFormID());
+                    ResolveProfiles(a_profileIDs, a_cell->GetFormID());
                 for (const auto& profile : profiles)
                 {
                     ApplyIndexedCellSettings(a_cell, profile);
                 }
-                WindowObjectOverrides::ApplyToCell(a_cell, profiles);
+                ObjectOverrides::ApplyToCell(a_cell, profiles);
                 ApplyRoomMarkerCleaning(a_cell, profiles);
             }
-            else if (a_result->status == XEMIAPI::CellStatus::kNoMatch)
+            else
             {
                 RoomMarkerPatcher::ConfigureCell(a_cell, false, {});
             }
@@ -559,18 +513,13 @@ namespace MPL::WindowSync
                 state.pending.reset();
                 return;
             }
-            ResolveTransition(*state.pending, *a_result);
+            ResolveTransition(*state.pending, a_profileIDs);
             DispatchResolvedTransition();
         }
 
-        const XEMIAPI::ClientCallbacks callbacks{
-            .id = "WeatherSync",
-            .OnCellClassified = OnCellClassified,
-        };
-
         void LogCellInventory(std::vector<CellInventoryEntry>& a_entries)
         {
-            if (!WeatherSync::IsDetailedLoggingEnabled())
+            if (!Heliosphan::IsDetailedLoggingEnabled())
             {
                 return;
             }
@@ -607,141 +556,151 @@ namespace MPL::WindowSync
             LogCellInventory(state.cellInventory);
         }
 
-        bool PrepareObjectOverrideProjection()
+        void ApplyPreparedClassification()
         {
-            WindowObjectOverrides::Initialize();
-            return WindowObjectOverrides::HasOverrides();
+            auto& state = GetState();
+            if (!state.initializationRequested ||
+                state.classificationApplied ||
+                !CellClassifier::IsReady())
+            {
+                return;
+            }
+
+            state.classificationApplied = true;
+            state.hasWindowProfiles = CellClassifier::HasProfiles();
+            state.cellInventory.clear();
+            state.collectingCellInventory = true;
+            for (std::size_t index = 0;
+                 index < CellClassifier::GetProfiledCellCount();
+                 ++index)
+            {
+                const auto cellID =
+                    CellClassifier::GetProfiledCell(index);
+                if (!cellID)
+                {
+                    continue;
+                }
+                auto* cell =
+                    RE::TESForm::LookupByID<RE::TESObjectCELL>(cellID);
+                if (!cell)
+                {
+                    continue;
+                }
+                OnCellClassified(
+                    cell,
+                    CellClassifier::GetProfiles(cellID));
+            }
+            FinishCellInventory();
+            logger::info(
+                "[Window Sync] cellContains profiles={}",
+                state.hasWindowProfiles ? "available" : "none");
         }
 
-        std::uint32_t ProjectObjectOverrideBase(
-            const char* a_profile,
-            const std::size_t a_profileLength,
-            const std::uint32_t a_base)
+        bool PrepareWindowSyncProfiles()
         {
-            return a_profile && a_profileLength != 0 ?
-                       WindowObjectOverrides::ProjectBase(
-                           std::string_view(a_profile, a_profileLength),
-                           a_base) :
-                       a_base;
+            auto& state = GetState();
+            if (state.startupPreparationStarted)
+            {
+                return CellClassifier::IsReady();
+            }
+            state.startupPreparationStarted = true;
+
+            const bool globalExternalEmittance =
+                ExternalEmittance::RequiresCompleteIndex();
+            const bool globalLightPlacer =
+                LightPlacer::RequiresCompleteInteriorIndex();
+            const bool pluginIndexRequired =
+                CellClassifier::RequiresPluginIndex() ||
+                LightPlacer::RequiresPluginIndex() ||
+                ExternalEmittance::RequiresPluginIndex();
+            PluginIndex::Result index;
+            if (pluginIndexRequired)
+            {
+                PluginIndex::BuildOptions indexOptions{
+                    .indexStaticEditorIDs =
+                        CellClassifier::RequiresStaticEditorIDs(),
+                    .skipExteriorCells = !globalExternalEmittance,
+                    .preparePlacementFilter =
+                        [](const PluginIndex::BuildOptions::EditorIDMap& a_editorIDs)
+                        {
+                            CellClassifier::PreparePlacementFilter(a_editorIDs);
+                            ExternalEmittance::PreparePlacementFilter();
+                            LightPlacer::PreparePlacementFilter();
+                        },
+                    .retainPlacement =
+                        [](const RE::FormID a_reference,
+                           const RE::FormID a_base,
+                           const RE::FormID)
+                        {
+                            return CellClassifier::NeedsPlacement(
+                                       a_reference,
+                                       a_base) ||
+                                   ExternalEmittance::NeedsPlacement(
+                                       a_reference,
+                                       a_base) ||
+                                   LightPlacer::NeedsPlacement(
+                                       a_reference,
+                                       a_base);
+                        },
+                };
+                if (!globalExternalEmittance && !globalLightPlacer)
+                {
+                    indexOptions.excludedCells =
+                        CellClassifier::GetExcludedCells();
+                }
+                logger::info(
+                    "[Window Sync] Plugin index pruning: exterior cells={}, excluded interior cells={}, global Light Placer={}, global external emittance={}",
+                    indexOptions.skipExteriorCells ? "skipped" : "retained",
+                    indexOptions.excludedCells.size(),
+                    globalLightPlacer ? "active" : "inactive",
+                    globalExternalEmittance ? "active" : "inactive");
+                index = PluginIndex::Build(indexOptions);
+            }
+            else
+            {
+                index.complete = true;
+                logger::info(
+                    "[Window Sync] Plugin index skipped because no active feature requires saved reference data");
+            }
+            const bool prepared = CellClassifier::Prepare(index);
+            if (prepared)
+            {
+                LightPlacer::Prepare(index);
+                ApplyPreparedClassification();
+                ExternalEmittance::Prepare(index);
+            }
+            else
+            {
+                LightPlacer::QueueStartupPatch({});
+            }
+            return prepared;
         }
 
-        const XEMIWindowObjectOverrideAPI::Projector objectOverrideProjector{
-            .id = "WeatherSync",
-            .PrepareOverrides = PrepareObjectOverrideProjection,
-            .ProjectOverrideBase = ProjectObjectOverrideBase,
-        };
     }  // namespace
-
-    void RegisterObjectOverrideProjection()
-    {
-        const auto ruleCount =
-            WeatherSync::GetWindowObjectOverrideRuleCount();
-        if (ruleCount == 0)
-        {
-            return;
-        }
-
-        auto& state = GetState();
-        state.module = GetModuleHandleW(L"XEMIUtil.dll");
-        const auto request =
-            state.module ?
-                reinterpret_cast<
-                    XEMIWindowObjectOverrideAPI::RequestInterface>(
-                    GetProcAddress(
-                        state.module,
-                        "XEMIUtil_RequestWindowObjectOverrideAPI")) :
-                nullptr;
-        const auto* api =
-            request ?
-                request(XEMIWindowObjectOverrideAPI::kVersion) :
-                nullptr;
-        if (!api ||
-            api->version != XEMIWindowObjectOverrideAPI::kVersion ||
-            !api->RegisterProjector)
-        {
-            logger::warn(
-                "[Window Sync] XEMIUtil Window Sync object override projection API is unavailable; override targets cannot contribute to cellContains classification");
-            return;
-        }
-
-        if (!api->RegisterProjector(
-                std::addressof(objectOverrideProjector)))
-        {
-            logger::error(
-                "[Window Sync] XEMIUtil rejected the WeatherSync object override projector");
-            return;
-        }
-        logger::info(
-            "[Window Sync] Registered the Window Sync object override projector for {} rule(s) with XEMIUtil",
-            ruleCount);
-    }
 
     void ProcessReference(RE::TESObjectREFR* a_reference)
     {
-        auto& state = GetState();
         auto* cell = a_reference ? a_reference->GetParentCell() : nullptr;
-        if (!cell || !state.api ||
-            !WindowObjectOverrides::HasOverrideFor(a_reference))
+        if (!cell ||
+            !ObjectOverrides::HasOverrideFor(a_reference))
         {
             return;
         }
-        const auto result = state.api->GetCellResult(cell);
-        if (result.status != XEMIAPI::CellStatus::kMatched)
-        {
-            return;
-        }
-        WindowObjectOverrides::ApplyToReference(
+        const auto& profileIDs =
+            CellClassifier::GetProfiles(cell->GetFormID());
+        ObjectOverrides::ApplyToReference(
             a_reference,
-            ResolveProfiles(result, cell->GetFormID()));
+            ResolveProfiles(profileIDs, cell->GetFormID()));
     }
 
     void Initialize()
     {
         auto& state = GetState();
-        WindowObjectOverrides::Initialize();
-        state.module = GetModuleHandleW(L"XEMIUtil.dll");
-        const auto request = state.module ?
-                                 reinterpret_cast<XEMIAPI::RequestInterface>(
-                                     GetProcAddress(state.module, "XEMIUtil_RequestAPI")) :
-                                 nullptr;
-        state.api = request ? request(XEMIAPI::kVersion) : nullptr;
-        if (!state.api || state.api->version != XEMIAPI::kVersion ||
-            !state.api->RegisterClient || !state.api->HasWindowProfiles ||
-            !state.api->GetCellResult)
-        {
-            state.api = nullptr;
-            state.hasWindowProfiles = false;
-            logger::info(
-                "[Window Sync] XEMIUtil Window Sync API is unavailable; existing cell-patch Weather Sync remains active");
-            return;
-        }
-        state.hasWindowProfiles = state.api->HasWindowProfiles();
-        state.cellInventory.clear();
-        state.collectingCellInventory = true;
-        const bool registered =
-            state.api->RegisterClient(std::addressof(callbacks));
-        if (!registered)
-        {
-            state.collectingCellInventory = false;
-            state.api = nullptr;
-            state.hasWindowProfiles = false;
-            logger::error(
-                "[Window Sync] XEMIUtil rejected the WeatherSync client registration");
-            return;
-        }
-        if (auto* tasks = SKSE::GetTaskInterface())
-        {
-            tasks->AddTask(FinishCellInventory);
-        }
-        else
-        {
-            logger::warn(
-                "[Window Sync] SKSE task interface is unavailable; the Window Sync cell inventory may be incomplete");
-            FinishCellInventory();
-        }
-        logger::info(
-            "[Window Sync] XEMIUtil API connected; cellContains profiles={}",
-            state.hasWindowProfiles ? "available" : "none");
+        ObjectOverrides::Initialize();
+        ObjectOverrides::Patches::Initialize();
+        state.initializationRequested = true;
+        PrepareWindowSyncProfiles();
+        ApplyPreparedClassification();
     }
 
     RE::TESRegion* CaptureSourceRegion()
@@ -758,10 +717,10 @@ namespace MPL::WindowSync
             }
         }
         const auto editorID = RegionEditorID(region);
-        if (region && !WeatherSync::IsSynchronizedRegion(editorID))
+        if (region && !Heliosphan::IsSynchronizedRegion(editorID))
         {
             state.lastKnownRegion = region->GetFormID();
-            if (WeatherSync::IsDetailedLoggingEnabled())
+            if (Heliosphan::IsDetailedLoggingEnabled())
             {
                 logger::info(
                     "[Window Sync] Captured last-known region '{}' [{:08X}] from cell {:08X}",
@@ -791,15 +750,16 @@ namespace MPL::WindowSync
         };
 
         if (!a_destination || !a_destination->IsInteriorCell() ||
-            !state.api || !state.hasWindowProfiles)
+            !state.hasWindowProfiles)
         {
             state.pending->resolved = true;
             return;
         }
-        const auto result = state.api->GetCellResult(a_destination);
+        const auto& profiles =
+            CellClassifier::GetProfiles(a_destination->GetFormID());
         if (state.pending && !state.pending->resolved)
         {
-            ResolveTransition(*state.pending, result);
+            ResolveTransition(*state.pending, profiles);
         }
     }
 

@@ -1,34 +1,62 @@
 #pragma once
 #include <cstdint>
-namespace MPL::API
+#include <type_traits>
+namespace MPL::API::MMSF
 {
-    class ServiceMap
+    enum struct MMSFAPIFeatures : uint64_t
+    {
+        kCaching = 1 << 0,
+        kAllocator = 1 << 1
+    };
+
+    constexpr MMSFAPIFeatures operator|(MMSFAPIFeatures lhs, MMSFAPIFeatures rhs)
+    {
+        return static_cast<MMSFAPIFeatures>(static_cast<std::underlying_type_t<MMSFAPIFeatures>>(lhs) | static_cast<std::underlying_type_t<MMSFAPIFeatures>>(rhs));
+    }
+
+    constexpr MMSFAPIFeatures operator&(MMSFAPIFeatures lhs, MMSFAPIFeatures rhs)
+    {
+        return static_cast<MMSFAPIFeatures>(static_cast<std::underlying_type_t<MMSFAPIFeatures>>(lhs) & static_cast<std::underlying_type_t<MMSFAPIFeatures>>(rhs));
+    }
+
+    constexpr MMSFAPIFeatures EmbedVersion(uint8_t ver)
+    {
+        return static_cast<MMSFAPIFeatures>(static_cast<std::underlying_type_t<MMSFAPIFeatures>>(ver) << 56);
+    }
+
+    constexpr uint8_t GetVersion(MMSFAPIFeatures features)
+    {
+        return static_cast<uint8_t>(static_cast<std::underlying_type_t<MMSFAPIFeatures>>(features) >> 56);
+    }
+
+    class Interface
     {
     public:
-        virtual uint8_t GetMMSFVersion() = 0;
+        virtual MMSFAPIFeatures GetVersion() = 0;
         virtual RE::FormID LookupFormIDForEDID(std::string) = 0;
         virtual std::string LookupEDIDForFormID(RE::FormID) = 0;
         virtual RE::TESForm* LookupCachedForm(std::string) = 0;
         virtual RE::TESForm* AllocateForm(std::string, RE::FormType) = 0;
-        virtual bool LoadOrderChanged() = 0;
-        virtual uint64_t GetLoadOrderHash() = 0;
     };
+
     struct MMSFMessage
     {
         enum message_type : uint32_t
         {
             kMessage_GetInterface = 'MMSF'
         };
-        ServiceMap* API;
+        Interface* API;
     };
 
-    [[nodiscard]] inline ServiceMap* RequestMMSFAPI()
+    static const char* sender = "MMSF";
+
+    [[nodiscard]] inline Interface* RequestMMSFAPI()
     {
         MMSFMessage message{};
         if (auto* messaging = SKSE::GetMessagingInterface())
         {
-            messaging->Dispatch(MMSFMessage::kMessage_GetInterface, &message, sizeof(MMSFMessage), nullptr);
+            messaging->Dispatch(MMSFMessage::kMessage_GetInterface, &message, sizeof(MMSFMessage), sender);
         }
         return message.API;
     }
-}  // namespace MPL::API
+}  // namespace MPL::API::MMSF

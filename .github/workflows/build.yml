@@ -1,0 +1,29 @@
+name: Build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+      - name: Configure
+        shell: pwsh
+        run: |
+          $env:VCPKG_ROOT = $env:VCPKG_INSTALLATION_ROOT
+          "VCPKG_ROOT=$env:VCPKG_ROOT" | Out-File -FilePath $env:GITHUB_ENV -Append
+          cmake --preset vs2026-windows-vcpkg
+      - name: Build
+        run: cmake --build --preset vs2026-windows-vcpkg
+      - name: Upload
+        uses: actions/upload-artifact@v7
+        with:
+          name: Heliosphan
+          path: |
+            build/Release/Heliosphan.dll
+            build/Release/Heliosphan.pdb

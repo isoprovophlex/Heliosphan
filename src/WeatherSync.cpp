@@ -1,10 +1,14 @@
 #include <AutoCSTonemapping.h>
+#include <CellClassifier.h>
+#include <ExternalEmittance.h>
 #include <LumaClient.h>
+#include <LightPlacer.h>
 #include <MMSF_API.h>
+#include <ObjectOverrides.h>
 #include <RegionRuntime.h>
 #include <RegionWeatherPatcher.h>
 #include <WeatherRuntime.h>
-#include <WeatherSync.h>
+#include <Heliosphan.h>
 #include <WindowSync.h>
 #include <algorithm>
 #include <cctype>
@@ -24,20 +28,29 @@
 #include <unordered_map>
 #include <utility>
 #include <vector>
+#include <rfl/Skip.hpp>
 
-namespace MPL::WeatherSync
+namespace MPL::Heliosphan
 {
     namespace
     {
         using namespace std::chrono_literals;
 
-        constexpr auto kConfigurationRoot = "Data/Luma/WeatherSync";
+        constexpr auto kConfigurationRoot = "Data/Luma/Heliosphan";
         constexpr auto kReadinessPollInterval = 16ms;
         constexpr std::uint32_t kMaxReadinessPollAttempts = 1000;
         constexpr auto kSkyUpdateWatchdogDelay = 2s;
         constexpr auto kExpirationPoll = 1000ms;
         constexpr auto kCurrentWeatherNotificationDelay = 2s;
         constexpr auto kNotificationDurationAdjustmentDelay = 100ms;
+        constexpr float kWeatherTransitionSelectionThreshold = 0.5f;
+
+        struct EmittancePatchingSettings
+        {
+            std::vector<std::string> Forms;
+            std::vector<std::string> lightPlacer;
+            std::string emmitance;
+        };
 
         struct WindowSyncSettings
         {
@@ -48,30 +61,42 @@ namespace MPL::WeatherSync
             };
 
             bool enabled = false;
-            std::string regionPrefix;
-            std::string fallbackRegion;
             std::optional<bool> showSky;
             std::optional<bool> useSkyLighting;
             std::optional<bool> sunlightShadows;
             std::optional<RoomMarkerCleaningSettings> cleanRoomMarkers;
-            std::vector<std::string> bosSwapFiles;
-            std::map<std::string, std::string> objectOverrides;
+            EmittancePatchingSettings emittancePatching;
+            std::optional<CellClassifier::Settings> cellContains;
+            std::vector<ObjectOverrides::Patches::Group> objects;
+        };
+
+        struct WeatherSyncSettings
+        {
+            bool enabled = false;
+            std::string weatherPrefix;
+            std::string fallbackWeather;
+            std::string regionPrefix;
+            std::string fallbackRegion;
         };
 
         struct Settings
         {
-            bool enabled = true;
             std::string id;
             std::string plugin;
             std::string cellPatchProvider;
-            std::string weatherPrefix;
-            std::string fallbackWeather;
             float overrideDurationGameHours = 3.0f;
             bool detailedLogging = false;
             bool notifications = false;
             AutoCSTonemapping::Settings autoCSTonemapping;
+            EmittancePatchingSettings emittancePatching;
+            WeatherSyncSettings weatherSync;
             WindowSyncSettings windowSync;
             RegionWeatherPatcher::Settings regionWeatherPatcher;
+            std::vector<ObjectOverrides::Patches::Group> objects;
+            rfl::Skip<std::map<std::string, std::string>>
+                compiledGlobalOverrides;
+            rfl::Skip<std::map<std::string, std::string>>
+                compiledWindowOverrides;
         };
 
         class Scheduler
@@ -139,6 +164,7 @@ namespace MPL::WeatherSync
             std::vector<bool> roomMarkerCleaningActive;
             std::vector<std::uint32_t> profileLoadOrder;
             std::vector<bool> profileUsesPluginLoadOrder;
+            bool profilePrioritiesResolved = false;
             std::unordered_map<RE::FormID, std::size_t> cells;
             std::optional<std::size_t> activeProfile;
             std::optional<std::size_t> pendingProfile;
@@ -152,7 +178,7 @@ namespace MPL::WeatherSync
             bool gameLoadPending = false;
             std::uint32_t readinessPollAttempts = 0;
             std::uint64_t generation = 0;
-            MPL::API::ServiceMap* mmsf = nullptr;
+            MPL::API::MMSF::Interface* mmsf = nullptr;
         };
 
         State& GetState()
@@ -204,18 +230,101 @@ namespace MPL::WeatherSync
                    a_settings.useSkyLighting.has_value() ||
                    a_settings.sunlightShadows.has_value() ||
                    a_settings.cleanRoomMarkers.has_value() ||
-                   !a_settings.objectOverrides.empty();
+                   a_settings.cellContains.has_value() ||
+                   !a_settings.emittancePatching.Forms.empty() ||
+                   !a_settings.emittancePatching.lightPlacer.empty() ||
+                   !a_settings.emittancePatching.emmitance.empty();
+        }
+
+        bool HasObjectOverrides(const Settings& a_settings)
+        {
+            return !a_settings.compiledWindowOverrides.get().empty();
+        }
+
+        bool SynchronizesWeather(const Settings& a_settings)
+        {
+            return a_settings.weatherSync.enabled &&
+                   !a_settings.weatherSync.weatherPrefix.empty() &&
+                   !a_settings.weatherSync.regionPrefix.empty();
         }
 
         bool DefinesWindowSyncProfile(const Settings& a_settings)
         {
-            const bool synchronizesWeather =
-                a_settings.windowSync.enabled &&
-                !a_settings.windowSync.regionPrefix.empty() &&
-                !a_settings.weatherPrefix.empty();
-            return a_settings.windowSync.enabled &&
-                   (synchronizesWeather ||
-                       HasWindowLayerSettings(a_settings.windowSync));
+            return SynchronizesWeather(a_settings) ||
+                   (a_settings.windowSync.enabled &&
+                       (HasWindowLayerSettings(a_settings.windowSync) ||
+                           HasObjectOverrides(a_settings)));
+        }
+
+        void ResolveWindowSyncProfilePriorities(State& a_state)
+        {
+            if (a_state.profilePrioritiesResolved)
+            {
+                return;
+            }
+            a_state.profileLoadOrder.resize(a_state.profiles.size());
+            a_state.profileUsesPluginLoadOrder.assign(
+                a_state.profiles.size(),
+                false);
+            auto* dataHandler = RE::TESDataHandler::GetSingleton();
+            for (std::size_t index = 0;
+                 index < a_state.profiles.size();
+                 ++index)
+            {
+                const auto& settings = a_state.profiles[index];
+                a_state.profileLoadOrder[index] =
+                    static_cast<std::uint32_t>(index);
+                if (!dataHandler)
+                {
+                    continue;
+                }
+                const auto& provider = settings.plugin.empty() ?
+                                           settings.id :
+                                           settings.plugin;
+                std::size_t fileIndex = 0;
+                for (const auto* file : dataHandler->files)
+                {
+                    if (!file)
+                    {
+                        ++fileIndex;
+                        continue;
+                    }
+                    const std::string_view filename{ file->GetFilename() };
+                    const bool matches = provider.contains('.') ?
+                                             EqualsIgnoreCase(filename, provider) :
+                                             EqualsIgnoreCase(
+                                                 std::filesystem::path(filename)
+                                                     .stem()
+                                                     .string(),
+                                                 provider);
+                    if (!matches)
+                    {
+                        ++fileIndex;
+                        continue;
+                    }
+                    const std::string_view summary{ file->summary.c_str() };
+                    if (summary.contains("[Luma]"))
+                    {
+                        a_state.profileLoadOrder[index] =
+                            static_cast<std::uint32_t>(fileIndex);
+                        a_state.profileUsesPluginLoadOrder[index] = true;
+                        logger::info(
+                            "[Heliosphan] [{}] Layer priority resolved from [Luma] plugin '{}' at load-order position {}",
+                            settings.id,
+                            filename,
+                            fileIndex);
+                    }
+                    else
+                    {
+                        logger::warn(
+                            "[Heliosphan] [{}] Provider plugin '{}' is loaded but its description does not contain [Luma]; configuration discovery order will be used for layering",
+                            settings.id,
+                            filename);
+                    }
+                    break;
+                }
+            }
+            a_state.profilePrioritiesResolved = true;
         }
 
         std::string GetEditorID(RE::TESWeather* a_weather)
@@ -257,7 +366,7 @@ namespace MPL::WeatherSync
             if (DetailedLogsEnabled())
             {
                 logger::info(
-                    "[Weather Sync] {}",
+                    "[Heliosphan] {}",
                     std::format(a_format, std::forward<Args>(a_args)...));
             }
         }
@@ -286,7 +395,7 @@ namespace MPL::WeatherSync
         {
             if (a_settings.detailedLogging)
             {
-                logger::info("[Weather Sync] [{}] {}", a_settings.id, a_message);
+                logger::info("[Heliosphan] [{}] {}", a_settings.id, a_message);
             }
         }
 
@@ -383,8 +492,9 @@ namespace MPL::WeatherSync
             const auto& profiles = GetState().profiles;
             for (std::size_t index = 0; index < profiles.size(); ++index)
             {
-                if (!profiles[index].weatherPrefix.empty() &&
-                    StartsWithIgnoreCase(editorID, profiles[index].weatherPrefix))
+                const auto& weatherSync = profiles[index].weatherSync;
+                if (SynchronizesWeather(profiles[index]) &&
+                    StartsWithIgnoreCase(editorID, weatherSync.weatherPrefix))
                 {
                     return index;
                 }
@@ -397,7 +507,8 @@ namespace MPL::WeatherSync
             auto editorID = GetEditorID(a_weather);
             if (a_sourceProfile)
             {
-                const auto& prefix = GetState().profiles[*a_sourceProfile].weatherPrefix;
+                const auto& prefix =
+                    GetState().profiles[*a_sourceProfile].weatherSync.weatherPrefix;
                 if (StartsWithIgnoreCase(editorID, prefix))
                 {
                     editorID.erase(0, prefix.size());
@@ -520,7 +631,9 @@ namespace MPL::WeatherSync
             auto targetEditorID = baseEditorID;
             if (entering)
             {
-                targetEditorID = state.profiles[*state.pendingProfile].weatherPrefix + baseEditorID;
+                targetEditorID =
+                    state.profiles[*state.pendingProfile].weatherSync.weatherPrefix +
+                    baseEditorID;
             }
             const auto pairedTargetEditorID = targetEditorID;
             auto* target = LookupWeather(targetEditorID);
@@ -580,16 +693,24 @@ namespace MPL::WeatherSync
             if (!target && reportProfile)
             {
                 const auto& settings = state.profiles[*reportProfile];
-                auto fallbackEditorID = settings.fallbackWeather;
+                auto fallbackEditorID = settings.weatherSync.fallbackWeather;
                 if (entering &&
-                    !StartsWithIgnoreCase(fallbackEditorID, settings.weatherPrefix))
+                    !StartsWithIgnoreCase(
+                        fallbackEditorID,
+                        settings.weatherSync.weatherPrefix))
                 {
-                    fallbackEditorID.insert(0, settings.weatherPrefix);
+                    fallbackEditorID.insert(
+                        0,
+                        settings.weatherSync.weatherPrefix);
                 }
                 else if (!entering &&
-                         StartsWithIgnoreCase(fallbackEditorID, settings.weatherPrefix))
+                         StartsWithIgnoreCase(
+                             fallbackEditorID,
+                             settings.weatherSync.weatherPrefix))
                 {
-                    fallbackEditorID.erase(0, settings.weatherPrefix.size());
+                    fallbackEditorID.erase(
+                        0,
+                        settings.weatherSync.weatherPrefix.size());
                 }
 
                 auto* fallback = LookupWeather(fallbackEditorID);
@@ -705,9 +826,9 @@ namespace MPL::WeatherSync
                     state.profiles[profile],
                     std::format(
                         "{} weather {} ({} native cell emittance light entries processed).",
-                         entering ? "Applied" : "Restored",
-                         targetEditorID,
-                         result.lightCount));
+                        entering ? "Applied" : "Restored",
+                        targetEditorID,
+                        result.lightCount));
                 if (showOverrideReleased)
                 {
                     ShowNotification(state.profiles[profile], "Weather Override Released");
@@ -809,6 +930,8 @@ namespace MPL::WeatherSync
                 }
 
                 state.gameLoadPending = false;
+                ObjectOverrides::Patches::CompleteGameLoad(cell);
+                ExternalEmittance::ReplayCell(cell);
                 auto* sourceWeather = CaptureSourceWeather();
                 LogDetailed(
                     "Game-load initialization accepted after {}: player cell={}, captured weather={}",
@@ -885,6 +1008,8 @@ namespace MPL::WeatherSync
                     issue);
                 ++state.generation;
                 state.gameLoadPending = false;
+                ObjectOverrides::Patches::CompleteGameLoad(nullptr);
+                ExternalEmittance::ReplayCell(nullptr);
                 state.readinessPollAttempts = 0;
                 ReleaseOwnedOverride();
                 state.activeProfile.reset();
@@ -1035,7 +1160,7 @@ namespace MPL::WeatherSync
         if (found == profiles.end())
         {
             logger::error(
-                "[Weather Sync] Cannot change detailed logging for unknown profile '{}'",
+                "[Heliosphan] Cannot change detailed logging for unknown profile '{}'",
                 a_profile);
             return false;
         }
@@ -1047,8 +1172,11 @@ namespace MPL::WeatherSync
             return false;
         }
         found->detailedLogging = a_enabled;
+        ObjectOverrides::Patches::SetDetailedLogging(
+            found->id,
+            a_enabled);
         logger::info(
-            "[Weather Sync] [{}] Detailed logging {} from Papyrus",
+            "[Heliosphan] [{}] Detailed logging {} from Papyrus",
             found->id,
             a_enabled ? "enabled" : "disabled");
         return true;
@@ -1068,7 +1196,7 @@ namespace MPL::WeatherSync
         if (found == profiles.end())
         {
             logger::error(
-                "[Weather Sync] Cannot change notifications for unknown profile '{}'",
+                "[Heliosphan] Cannot change notifications for unknown profile '{}'",
                 a_profile);
             return false;
         }
@@ -1081,7 +1209,7 @@ namespace MPL::WeatherSync
         }
         found->notifications = a_enabled;
         logger::info(
-            "[Weather Sync] [{}] Notifications {} from Papyrus",
+            "[Heliosphan] [{}] Notifications {} from Papyrus",
             found->id,
             a_enabled ? "enabled" : "disabled");
         return true;
@@ -1094,16 +1222,21 @@ namespace MPL::WeatherSync
         state.roomMarkerCleaningActive.clear();
         state.profileLoadOrder.clear();
         state.profileUsesPluginLoadOrder.clear();
+        state.profilePrioritiesResolved = false;
         state.cells.clear();
         AutoCSTonemapping::ClearProfiles();
+        LightPlacer::ClearProfiles();
+        ExternalEmittance::ClearProfiles();
+        ObjectOverrides::Patches::ClearGroups();
+        CellClassifier::Clear();
 
         std::error_code error;
         const std::filesystem::path root{ kConfigurationRoot };
-        logger::info("[Weather Sync] Scanning configuration folder {}", root.string());
+        logger::info("[Heliosphan] Scanning configuration folder {}", root.string());
         if (!std::filesystem::is_directory(root, error))
         {
             logger::info(
-                "[Weather Sync] Configuration folder is unavailable; feature will remain inactive (error={})",
+                "[Heliosphan] Configuration folder is unavailable; Heliosphan will remain inactive (error={})",
                 error ? error.message() : "none");
             return;
         }
@@ -1123,22 +1256,17 @@ namespace MPL::WeatherSync
             }
         }
         std::ranges::sort(files);
-        logger::info("[Weather Sync] Discovered {} JSON configuration file(s)", files.size());
+        logger::info("[Heliosphan] Discovered {} JSON configuration file(s)", files.size());
         for (const auto& file : files)
         {
-            logger::info("[Weather Sync] Reading configuration {}", file.string());
+            logger::info("[Heliosphan] Reading configuration {}", file.string());
             const auto parsed = rfl::json::read<Settings, rfl::DefaultIfMissing>(ReadText(file));
             if (!parsed)
             {
-                logger::warn("[Weather Sync] Could not read configuration {}: {}", file.string(), parsed.error().what());
+                logger::warn("[Heliosphan] Could not read configuration {}: {}", file.string(), parsed.error().what());
                 continue;
             }
             auto settings = parsed.value();
-            if (!settings.enabled)
-            {
-                logger::info("[Weather Sync] Skipping disabled configuration {}", file.string());
-                continue;
-            }
             if (settings.id.empty()) settings.id = file.stem().string();
             if (std::ranges::any_of(
                     state.profiles,
@@ -1150,7 +1278,7 @@ namespace MPL::WeatherSync
                     }))
             {
                 logger::warn(
-                    "[Weather Sync] Skipping configuration {} because profile ID '{}' "
+                    "[Heliosphan] Skipping configuration {} because profile ID '{}' "
                     "is already loaded",
                     file.string(),
                     settings.id);
@@ -1166,50 +1294,157 @@ namespace MPL::WeatherSync
                 settings.detailedLogging = detailedLogging;
                 settings.notifications = notifications;
             }
-            const bool cellPatchSync =
-                !settings.cellPatchProvider.empty();
-            const bool fullWindowSync =
-                settings.windowSync.enabled &&
-                !settings.windowSync.regionPrefix.empty();
+            if (settings.weatherSync.enabled &&
+                (settings.weatherSync.weatherPrefix.empty() ||
+                    settings.weatherSync.regionPrefix.empty()))
+            {
+                logger::warn(
+                    "[Heliosphan] Configuration {} has weatherSync enabled without "
+                    "weatherPrefix and regionPrefix; weather synchronization is disabled",
+                    file.string());
+                settings.weatherSync.enabled = false;
+            }
+            const bool weatherSynchronization = SynchronizesWeather(settings);
+            const auto validateEmittancePatching =
+                [&](EmittancePatchingSettings& a_patching,
+                    const std::string_view a_scope,
+                    const bool a_requiresCellFilter)
+                {
+                    const bool hasWork = !a_patching.Forms.empty() ||
+                                         !a_patching.lightPlacer.empty();
+                    if (!hasWork)
+                    {
+                        a_patching = {};
+                        return false;
+                    }
+                    if (a_patching.emmitance.empty())
+                    {
+                        logger::warn(
+                            "[Heliosphan] Configuration {} has {} emittancePatching without its required 'emmitance' field; that block is disabled",
+                            file.string(),
+                            a_scope);
+                        a_patching = {};
+                        return false;
+                    }
+                    if (a_requiresCellFilter &&
+                        (!settings.windowSync.enabled ||
+                            !settings.windowSync.cellContains.has_value()))
+                    {
+                        logger::warn(
+                            "[Heliosphan] Configuration {} has windowSync.emittancePatching without enabled windowSync.cellContains; that block is disabled",
+                            file.string());
+                        a_patching = {};
+                        return false;
+                    }
+                    return true;
+                };
+            const bool globalEmittancePatching =
+                validateEmittancePatching(
+                    settings.emittancePatching,
+                    "top-level",
+                    false);
+            const bool windowEmittancePatching =
+                validateEmittancePatching(
+                    settings.windowSync.emittancePatching,
+                    "windowSync",
+                    true);
+            const bool lightPlacer =
+                !settings.emittancePatching.lightPlacer.empty() ||
+                !settings.windowSync.emittancePatching.lightPlacer.empty();
             const bool windowLayer =
                 settings.windowSync.enabled &&
                 HasWindowLayerSettings(settings.windowSync);
-            if ((cellPatchSync || fullWindowSync) &&
-                settings.weatherPrefix.empty())
+            std::size_t globalOverrideCount = 0;
+            std::size_t windowOverrideCount = 0;
+            std::size_t objectTransformCount = 0;
+            std::size_t objectPlacementCount = 0;
+            auto& compiledGlobalOverrides =
+                settings.compiledGlobalOverrides.get();
+            for (const auto& group : settings.objects)
+            {
+                globalOverrideCount += group.overrides.size();
+                objectTransformCount += group.transforms.size();
+                objectPlacementCount += group.placements.size();
+                for (const auto& [source, target] : group.overrides)
+                {
+                    compiledGlobalOverrides.insert_or_assign(source, target);
+                }
+            }
+            auto& compiledWindowOverrides =
+                settings.compiledWindowOverrides.get();
+            for (const auto& group : settings.windowSync.objects)
+            {
+                if (!group.transforms.empty() || !group.placements.empty() ||
+                    !group.pluginInclusions.empty() ||
+                    !group.pluginExclusions.empty())
+                {
+                    logger::warn(
+                        "[Heliosphan] Configuration {} has unsupported fields in windowSync.objects; only overrides are accepted there",
+                        file.string());
+                }
+                windowOverrideCount += group.overrides.size();
+                for (const auto& [source, target] : group.overrides)
+                {
+                    compiledWindowOverrides.insert_or_assign(source, target);
+                }
+            }
+            if (!compiledWindowOverrides.empty() &&
+                (!settings.windowSync.enabled ||
+                    !settings.windowSync.cellContains.has_value()))
             {
                 logger::warn(
-                    "[Weather Sync] Configuration {} requires weatherPrefix for cell-patch "
-                    "or full Window Sync behavior",
+                    "[Heliosphan] Configuration {} has windowSync.objects overrides without enabled windowSync.cellContains; those overrides are disabled",
                     file.string());
-                continue;
+                compiledWindowOverrides.clear();
+                windowOverrideCount = 0;
             }
-            if (!cellPatchSync && !fullWindowSync && !windowLayer &&
+            const bool objectPatching =
+                globalOverrideCount != 0 || windowOverrideCount != 0 ||
+                objectTransformCount != 0 || objectPlacementCount != 0;
+            if (!weatherSynchronization && !windowLayer &&
+                !objectPatching &&
+                !lightPlacer &&
+                !globalEmittancePatching &&
+                !windowEmittancePatching &&
                 !settings.regionWeatherPatcher.enabled &&
                 !settings.autoCSTonemapping.enabled)
             {
                 logger::warn(
-                    "[Weather Sync] Configuration {} does not declare any active behavior",
+                    "[Heliosphan] Configuration {} does not declare any active behavior",
                     file.string());
                 continue;
             }
             settings.overrideDurationGameHours = std::max(0.0f, settings.overrideDurationGameHours);
             logger::info(
-                "[Weather Sync] Loaded profile '{}': provider='{}', weather prefix='{}', "
+                "[Heliosphan] Loaded profile '{}': provider='{}', weather sync={}, weather prefix='{}', "
                 "window sync={}, region prefix='{}', fallback weather='{}', fallback region='{}', "
                 "region weather patcher={}, target plugins={}, Auto CS Tonemapping={}, "
-                "Auto CS target plugins={}, "
+                "Auto CS target plugins={}, cellContains emittance={}, global/window emittance forms={}/{}, global/window Light Placer lights={}/{}, global/window object groups={}/{}, global/window overrides={}/{}, transforms={}, placements={}, "
                 "override hours={:.3f}, detailed logging={}, notifications={}",
                 settings.id,
                 settings.cellPatchProvider,
-                settings.weatherPrefix,
+                weatherSynchronization,
+                settings.weatherSync.weatherPrefix,
                 settings.windowSync.enabled,
-                settings.windowSync.regionPrefix,
-                settings.fallbackWeather,
-                settings.windowSync.fallbackRegion,
+                settings.weatherSync.regionPrefix,
+                settings.weatherSync.fallbackWeather,
+                settings.weatherSync.fallbackRegion,
                 settings.regionWeatherPatcher.enabled,
                 settings.regionWeatherPatcher.plugins.size(),
                 settings.autoCSTonemapping.enabled,
                 settings.autoCSTonemapping.plugins.size(),
+                settings.windowSync.cellContains.has_value() &&
+                    !settings.windowSync.cellContains->emittance.empty(),
+                settings.emittancePatching.Forms.size(),
+                settings.windowSync.emittancePatching.Forms.size(),
+                settings.emittancePatching.lightPlacer.size(),
+                settings.windowSync.emittancePatching.lightPlacer.size(),
+                settings.objects.size(),
+                settings.windowSync.objects.size(),
+                globalOverrideCount,
+                windowOverrideCount,
+                objectTransformCount,
+                objectPlacementCount,
                 settings.overrideDurationGameHours,
                 settings.detailedLogging,
                 settings.notifications);
@@ -1217,9 +1452,83 @@ namespace MPL::WeatherSync
                 settings.id,
                 settings.autoCSTonemapping,
                 file);
+            LightPlacer::Settings globalLightPlacerSettings{
+                .lights = std::move(
+                    settings.emittancePatching.lightPlacer),
+                .externalEmittance =
+                    settings.emittancePatching.emmitance,
+            };
+            LightPlacer::AddProfile(
+                settings.id,
+                std::move(globalLightPlacerSettings),
+                false,
+                settings.detailedLogging);
+            LightPlacer::Settings windowLightPlacerSettings{
+                .lights = std::move(
+                    settings.windowSync.emittancePatching.lightPlacer),
+                .externalEmittance =
+                    settings.windowSync.emittancePatching.emmitance,
+            };
+            LightPlacer::AddProfile(
+                settings.id,
+                std::move(windowLightPlacerSettings),
+                true,
+                settings.detailedLogging);
+            const auto globalFormPatchingTarget =
+                settings.emittancePatching.Forms.empty() ?
+                    std::string{} :
+                    settings.emittancePatching.emmitance;
+            ExternalEmittance::Settings globalEmittanceSettings{
+                .forms = std::move(settings.emittancePatching.Forms),
+                .target = globalFormPatchingTarget,
+            };
+            ExternalEmittance::AddProfile(
+                settings.id,
+                std::move(globalEmittanceSettings),
+                false,
+                settings.detailedLogging);
+            const auto windowFormPatchingTarget =
+                settings.windowSync.emittancePatching.Forms.empty() ?
+                    std::string{} :
+                    settings.windowSync.emittancePatching.emmitance;
+            ExternalEmittance::Settings windowEmittanceSettings{
+                .forms = std::move(
+                    settings.windowSync.emittancePatching.Forms),
+                .target = windowFormPatchingTarget,
+                .cellContainsTarget =
+                    settings.windowSync.cellContains ?
+                        settings.windowSync.cellContains->emittance :
+                        std::string{},
+            };
+            ExternalEmittance::AddProfile(
+                settings.id,
+                std::move(windowEmittanceSettings),
+                true,
+                settings.detailedLogging);
+            for (std::size_t index = 0;
+                 index < settings.objects.size();
+                 ++index)
+            {
+                ObjectOverrides::Patches::AddGroup(
+                    settings.id,
+                    std::format(
+                        "{}:objects[{}]",
+                        settings.id,
+                        index + 1),
+                    std::move(settings.objects[index]),
+                    settings.detailedLogging);
+            }
+            if (settings.windowSync.enabled &&
+                settings.windowSync.cellContains)
+            {
+                CellClassifier::AddRule(
+                    settings.id,
+                    *settings.windowSync.cellContains,
+                    settings.detailedLogging);
+            }
             state.profiles.push_back(std::move(settings));
         }
-        logger::info("[Weather Sync] Configuration loading finished with {} active profile(s)", state.profiles.size());
+        logger::info("[Heliosphan] Configuration loading finished with {} active profile(s)", state.profiles.size());
     }
 
     void RecordCellPatch(
@@ -1234,13 +1543,16 @@ namespace MPL::WeatherSync
         auto& state = GetState();
         for (std::size_t index = 0; index < state.profiles.size(); ++index)
         {
-            if (EqualsIgnoreCase(state.profiles[index].cellPatchProvider, a_provider))
+            if (SynchronizesWeather(state.profiles[index]) &&
+                EqualsIgnoreCase(
+                    state.profiles[index].cellPatchProvider,
+                    a_provider))
             {
                 state.cells[a_cell->formID] = index;
                 if (state.profiles[index].detailedLogging)
                 {
                     logger::info(
-                        "[Weather Sync] [{}] Registered synchronized interior cell {:08X} from provider '{}'",
+                        "[Heliosphan] [{}] Registered synchronized interior cell {:08X} from provider '{}'",
                         state.profiles[index].id,
                         a_cell->formID,
                         a_provider);
@@ -1260,9 +1572,7 @@ namespace MPL::WeatherSync
         for (std::size_t index = 0; index < state.profiles.size(); ++index)
         {
             const auto& settings = state.profiles[index];
-            if (settings.windowSync.enabled &&
-                !settings.windowSync.regionPrefix.empty() &&
-                !settings.weatherPrefix.empty() &&
+            if (SynchronizesWeather(settings) &&
                 EqualsIgnoreCase(settings.id, a_profile))
             {
                 state.cells[a_cell->formID] = index;
@@ -1277,17 +1587,51 @@ namespace MPL::WeatherSync
         return false;
     }
 
+    void PrepareWindowSyncProfilePriorities()
+    {
+        ResolveWindowSyncProfilePriorities(GetState());
+    }
+
+    void SortWindowSyncProfileIDs(std::vector<std::string>& a_profiles)
+    {
+        PrepareWindowSyncProfilePriorities();
+        std::ranges::stable_sort(
+            a_profiles,
+            [](const std::string& a_left, const std::string& a_right)
+            {
+                const auto left = GetWindowSyncProfile(a_left);
+                const auto right = GetWindowSyncProfile(a_right);
+                if (left && right)
+                {
+                    if (left->usesPluginLoadOrder !=
+                        right->usesPluginLoadOrder)
+                    {
+                        return !left->usesPluginLoadOrder;
+                    }
+                    if (left->loadOrder != right->loadOrder)
+                    {
+                        return left->loadOrder < right->loadOrder;
+                    }
+                    return left->id < right->id;
+                }
+                if (left.has_value() != right.has_value())
+                {
+                    return left.has_value();
+                }
+                const auto order = _stricmp(a_left.c_str(), a_right.c_str());
+                return order != 0 ? order < 0 : a_left < a_right;
+            });
+    }
+
     std::optional<WindowSyncProfile> GetWindowSyncProfile(
         const std::string_view a_profile)
     {
-        const auto& state = GetState();
+        auto& state = GetState();
+        ResolveWindowSyncProfilePriorities(state);
         for (std::size_t index = 0; index < state.profiles.size(); ++index)
         {
             const auto& settings = state.profiles[index];
-            const bool synchronizesWeather =
-                settings.windowSync.enabled &&
-                !settings.windowSync.regionPrefix.empty() &&
-                !settings.weatherPrefix.empty();
+            const bool synchronizesWeather = SynchronizesWeather(settings);
             if (!DefinesWindowSyncProfile(settings) ||
                 !EqualsIgnoreCase(settings.id, a_profile))
             {
@@ -1295,8 +1639,8 @@ namespace MPL::WeatherSync
             }
             return WindowSyncProfile{
                 .id = settings.id,
-                .regionPrefix = settings.windowSync.regionPrefix,
-                .fallbackRegion = settings.windowSync.fallbackRegion,
+                .regionPrefix = settings.weatherSync.regionPrefix,
+                .fallbackRegion = settings.weatherSync.fallbackRegion,
                 .showSky = settings.windowSync.showSky,
                 .useSkyLighting = settings.windowSync.useSkyLighting,
                 .sunlightShadows = settings.windowSync.sunlightShadows,
@@ -1334,39 +1678,47 @@ namespace MPL::WeatherSync
         return profiles;
     }
 
-    std::vector<WindowObjectOverrideProfileView>
-    GetWindowObjectOverrideProfiles()
+    std::vector<ObjectOverrideProfileView>
+    GetObjectOverrideProfiles()
     {
-        std::vector<WindowObjectOverrideProfileView> profiles;
+        std::vector<ObjectOverrideProfileView> profiles;
         const auto& settingsProfiles = GetState().profiles;
-        profiles.reserve(settingsProfiles.size());
+        profiles.reserve(settingsProfiles.size() * 2);
         for (const auto& settings : settingsProfiles)
         {
-            if (settings.windowSync.objectOverrides.empty() ||
-                !DefinesWindowSyncProfile(settings))
+            const auto& globalOverrides =
+                settings.compiledGlobalOverrides.get();
+            if (!globalOverrides.empty())
             {
-                continue;
+                profiles.push_back(ObjectOverrideProfileView{
+                    .id = settings.id,
+                    .overrides = std::addressof(globalOverrides),
+                    .global = true,
+                    .debugLogging = settings.detailedLogging,
+                });
             }
-            profiles.push_back(WindowObjectOverrideProfileView{
-                .id = settings.id,
-                .objectOverrides =
-                    std::addressof(settings.windowSync.objectOverrides),
-                .debugLogging = settings.detailedLogging,
-            });
+            const auto& windowOverrides =
+                settings.compiledWindowOverrides.get();
+            if (!windowOverrides.empty() &&
+                DefinesWindowSyncProfile(settings))
+            {
+                profiles.push_back(ObjectOverrideProfileView{
+                    .id = settings.id,
+                    .overrides = std::addressof(windowOverrides),
+                    .debugLogging = settings.detailedLogging,
+                });
+            }
         }
         return profiles;
     }
 
-    std::size_t GetWindowObjectOverrideRuleCount()
+    std::size_t GetObjectOverrideRuleCount()
     {
         std::size_t count = 0;
         for (const auto& settings : GetState().profiles)
         {
-            if (!settings.windowSync.objectOverrides.empty() &&
-                DefinesWindowSyncProfile(settings))
-            {
-                count += settings.windowSync.objectOverrides.size();
-            }
+            count += settings.compiledGlobalOverrides.get().size();
+            count += settings.compiledWindowOverrides.get().size();
         }
         return count;
     }
@@ -1378,17 +1730,18 @@ namespace MPL::WeatherSync
             return false;
         }
         return std::ranges::any_of(GetState().profiles, [&](const Settings& a_settings)
-            { return a_settings.windowSync.enabled &&
-                     !a_settings.windowSync.regionPrefix.empty() &&
-                     StartsWithIgnoreCase(a_editorID, a_settings.windowSync.regionPrefix); });
+            { return SynchronizesWeather(a_settings) &&
+                     StartsWithIgnoreCase(
+                         a_editorID,
+                         a_settings.weatherSync.regionPrefix); });
     }
 
     std::string BaseRegionEditorID(const std::string_view a_editorID)
     {
         for (const auto& settings : GetState().profiles)
         {
-            const auto& prefix = settings.windowSync.regionPrefix;
-            if (settings.windowSync.enabled && !prefix.empty() &&
+            const auto& prefix = settings.weatherSync.regionPrefix;
+            if (SynchronizesWeather(settings) &&
                 StartsWithIgnoreCase(a_editorID, prefix))
             {
                 return std::string(a_editorID.substr(prefix.size()));
@@ -1397,7 +1750,7 @@ namespace MPL::WeatherSync
         return std::string(a_editorID);
     }
 
-    API::ServiceMap* GetMMSFAPI()
+    API::MMSF::Interface* GetMMSFAPI()
     {
         return GetState().mmsf;
     }
@@ -1409,13 +1762,12 @@ namespace MPL::WeatherSync
         {
             return nullptr;
         }
-        // Skyrim retains the outgoing blend source in lastWeather until the
-        // transition completes. This matches Weather.GetOutgoingWeather().
-        if (sky->lastWeather)
+        if (sky->lastWeather && sky->currentWeather &&
+            sky->currentWeatherPct < kWeatherTransitionSelectionThreshold)
         {
             return sky->lastWeather;
         }
-        return sky->currentWeather;
+        return sky->currentWeather ? sky->currentWeather : sky->lastWeather;
     }
 
     void OnCellChanged(
@@ -1424,7 +1776,15 @@ namespace MPL::WeatherSync
         const bool a_usedDefaultRegion)
     {
         auto& state = GetState();
+        const bool wasGameLoadPending = state.gameLoadPending;
         state.gameLoadPending = false;
+        if (wasGameLoadPending)
+        {
+            ObjectOverrides::Patches::CompleteGameLoad(
+                const_cast<RE::TESObjectCELL*>(a_cell));
+            ExternalEmittance::ReplayCell(
+                const_cast<RE::TESObjectCELL*>(a_cell));
+        }
         if (state.profiles.empty() || !state.mmsf)
         {
             LogDetailed(
@@ -1452,10 +1812,10 @@ namespace MPL::WeatherSync
                 *fallbackProfile < state.profiles.size())
             {
                 const auto& settings = state.profiles[*fallbackProfile];
-                if (!settings.fallbackWeather.empty())
+                if (!settings.weatherSync.fallbackWeather.empty())
                 {
                     a_sourceWeather =
-                        LookupWeather(settings.fallbackWeather);
+                        LookupWeather(settings.weatherSync.fallbackWeather);
                     if (a_sourceWeather)
                     {
                         usedDefaultWeather = true;
@@ -1463,14 +1823,14 @@ namespace MPL::WeatherSync
                             settings,
                             std::format(
                                 "Using configured fallback weather '{}' because no runtime weather is available",
-                                settings.fallbackWeather));
+                                settings.weatherSync.fallbackWeather));
                     }
                     else
                     {
                         logger::warn(
                             "[Weather Sync] [{}] Configured fallback weather '{}' could not be resolved",
                             settings.id,
-                            settings.fallbackWeather);
+                            settings.weatherSync.fallbackWeather);
                     }
                 }
             }
@@ -1553,67 +1913,11 @@ namespace MPL::WeatherSync
     {
         auto& state = GetState();
         state.roomMarkerCleaningActive.assign(state.profiles.size(), false);
-        state.profileLoadOrder.resize(state.profiles.size());
-        state.profileUsesPluginLoadOrder.assign(
-            state.profiles.size(),
-            false);
+        PrepareWindowSyncProfilePriorities();
         auto* dataHandler = RE::TESDataHandler::GetSingleton();
         for (std::size_t index = 0; index < state.profiles.size(); ++index)
         {
             const auto& settings = state.profiles[index];
-            state.profileLoadOrder[index] =
-                static_cast<std::uint32_t>(index);
-            if (dataHandler)
-            {
-                const auto& provider =
-                    settings.plugin.empty() ?
-                        settings.id :
-                        settings.plugin;
-                std::size_t fileIndex = 0;
-                for (const auto* file : dataHandler->files)
-                {
-                    if (!file)
-                    {
-                        ++fileIndex;
-                        continue;
-                    }
-                    const std::string_view filename{ file->GetFilename() };
-                    const bool matches =
-                        provider.contains('.') ?
-                            EqualsIgnoreCase(filename, provider) :
-                            EqualsIgnoreCase(
-                                std::filesystem::path(filename).stem().string(),
-                                provider);
-                    if (!matches)
-                    {
-                        ++fileIndex;
-                        continue;
-                    }
-                    const std::string_view summary{ file->summary.c_str() };
-                    if (summary.contains("[Luma]"))
-                    {
-                        state.profileLoadOrder[index] =
-                            static_cast<std::uint32_t>(fileIndex);
-                        state.profileUsesPluginLoadOrder[index] = true;
-                        logger::info(
-                            "[Weather Sync] [{}] Layer priority resolved from [Luma] plugin "
-                            "'{}' at load-order position {}",
-                            settings.id,
-                            filename,
-                            fileIndex);
-                    }
-                    else
-                    {
-                        logger::warn(
-                            "[Weather Sync] [{}] Provider plugin '{}' is loaded but its "
-                            "description does not contain [Luma]; configuration discovery "
-                            "order will be used for layering",
-                            settings.id,
-                            filename);
-                    }
-                    break;
-                }
-            }
             if (!settings.windowSync.cleanRoomMarkers)
             {
                 continue;
@@ -1640,7 +1944,7 @@ namespace MPL::WeatherSync
             if (plugins.empty())
             {
                 logger::info(
-                    "[Weather Sync] [{}] RoomMarker cleaning enabled: no plugin gate "
+                    "[Room Marker] [{}] Cleaning enabled: no plugin gate "
                     "configured, {} excluded marker source plugin(s)",
                     settings.id,
                     excludedPlugins.size());
@@ -1648,7 +1952,7 @@ namespace MPL::WeatherSync
             else
             {
                 logger::info(
-                    "[Weather Sync] [{}] RoomMarker cleaning {}: {} configured plugin "
+                    "[Room Marker] [{}] Cleaning {}: {} configured plugin "
                     "gate(s), {} excluded marker source plugin(s)",
                     settings.id,
                     state.roomMarkerCleaningActive[index] ?
@@ -1666,16 +1970,23 @@ namespace MPL::WeatherSync
                         plugin));
             }
         }
-        state.mmsf = MPL::API::RequestMMSFAPI();
+        state.mmsf = MPL::API::MMSF::RequestMMSFAPI();
         logger::info(
-            "[Weather Sync] Data-loaded initialization: active profiles={}, MMSF API={}",
+            "[Heliosphan] Data-loaded initialization: active profiles={}, MMSF API={}",
             state.profiles.size(),
             state.mmsf ? "available" : "unavailable");
-        if (!state.profiles.empty() && !state.mmsf)
+        const bool requiresMMSF = std::ranges::any_of(
+            state.profiles,
+            [](const Settings& a_settings)
+            {
+                return SynchronizesWeather(a_settings) ||
+                       a_settings.regionWeatherPatcher.enabled;
+            });
+        if (requiresMMSF && !state.mmsf)
         {
             logger::error(
                 "[Weather Sync] Weather and region synchronization disabled because the "
-                "MMSF API is unavailable; non-region Window Sync layers remain active");
+                "MMSF API is unavailable; Object Overrides and non-region Window Sync layers remain active");
         }
         if (state.mmsf)
         {
@@ -1684,12 +1995,13 @@ namespace MPL::WeatherSync
                 RegionWeatherPatcher::Apply(
                     settings.regionWeatherPatcher,
                     settings.id,
-                    settings.weatherPrefix,
-                    settings.windowSync.regionPrefix,
+                    settings.weatherSync.weatherPrefix,
+                    settings.weatherSync.regionPrefix,
                     state.mmsf,
                     settings.detailedLogging);
             }
         }
+        ObjectOverrides::Patches::Initialize();
     }
 
     void OnGameLoaded()
@@ -1725,4 +2037,4 @@ namespace MPL::WeatherSync
         state.readinessPollAttempts = 0;
         ClearPendingTransition(state);
     }
-}  // namespace MPL::WeatherSync
+}  // namespace MPL::Heliosphan

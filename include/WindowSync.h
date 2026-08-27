@@ -17,7 +17,6 @@ namespace SKSE
 
 namespace MPL::WindowSync
 {
-    void RegisterObjectOverrideProjection();
     void Initialize();
     void ProcessReference(RE::TESObjectREFR* a_reference);
     RE::TESRegion* CaptureSourceRegion();

@@ -1,6 +1,7 @@
 #include <LumaClient.h>
+#include <ObjectOverrides.h>
 #include <RoomMarkerPatcher.h>
-#include <WeatherSync.h>
+#include <Heliosphan.h>
 #include <WindowSync.h>
 #include <string>
 
@@ -15,11 +16,16 @@ namespace MPL::LumaClient
         {
             RoomMarkerPatcher::ProcessReference(a_reference);
             WindowSync::ProcessReference(a_reference);
+            ObjectOverrides::Patches::ApplyTransformsToReference(a_reference);
         }
 
         void OnCellChanging(RE::TESObjectCELL* a_destination)
         {
-            auto* sourceWeather = WeatherSync::CaptureSourceWeather();
+            if (a_destination)
+            {
+                ObjectOverrides::Patches::EnsurePlacements(a_destination);
+            }
+            auto* sourceWeather = Heliosphan::CaptureSourceWeather();
             auto* sourceRegion = WindowSync::CaptureSourceRegion();
             WindowSync::PrepareCellChange(
                 a_destination,
@@ -37,7 +43,7 @@ namespace MPL::LumaClient
             const char* a_provider,
             const bool a_hasSkylight)
         {
-            WeatherSync::RecordCellPatch(
+            Heliosphan::RecordCellPatch(
                 a_cell,
                 a_provider ? std::string_view(a_provider) :
                              std::string_view{},
@@ -45,7 +51,7 @@ namespace MPL::LumaClient
         }
 
         const LumaAPI::ClientCallbacks callbacks{
-            .id = "WeatherSync",
+            .id = "Heliosphan",
             .OnReferenceInitialized = OnReferenceInitialized,
             .OnCellChanging = OnCellChanging,
             .OnCellChanged = OnCellChanged,

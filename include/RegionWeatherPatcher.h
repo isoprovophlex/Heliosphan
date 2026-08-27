@@ -18,6 +18,6 @@ namespace MPL::RegionWeatherPatcher
         std::string_view a_profile,
         std::string_view a_weatherPrefix,
         std::string_view a_regionPrefix,
-        API::ServiceMap* a_mmsf,
+        API::MMSF::Interface* a_mmsf,
         bool a_detailedLogging);
 }  // namespace MPL::RegionWeatherPatcher

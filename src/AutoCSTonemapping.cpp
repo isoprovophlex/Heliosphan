@@ -283,7 +283,7 @@ namespace MPL::AutoCSTonemapping
         if (found == state.profiles.end())
         {
             logger::error(
-                "[Weather Sync] Cannot change Auto CS Tonemapping "
+                "[Auto CS Tonemapping] Cannot change setting "
                 "for unknown profile '{}'",
                 a_profile);
             return false;
@@ -291,15 +291,14 @@ namespace MPL::AutoCSTonemapping
         if (!WriteEnabled(*found, a_enabled))
         {
             logger::error(
-                "[Weather Sync] [{}] Could not update Auto CS "
-                "Tonemapping in {}",
+                "[Auto CS Tonemapping] [{}] Could not update setting in {}",
                 found->id,
                 found->sourcePath.string());
             return false;
         }
         found->settings.enabled = a_enabled;
         logger::info(
-            "[Weather Sync] [{}] Auto CS Tonemapping {} from "
+            "[Auto CS Tonemapping] [{}] Setting {} from "
             "Papyrus; restart required",
             found->id,
             a_enabled ? "enabled" : "disabled");
@@ -324,7 +323,7 @@ namespace MPL::AutoCSTonemapping
         if (!dataHandler)
         {
             logger::warn(
-                "[Weather Sync] Auto CS Tonemapping could not run "
+                "[Auto CS Tonemapping] Could not run "
                 "because TESDataHandler is unavailable");
             return;
         }
@@ -344,7 +343,7 @@ namespace MPL::AutoCSTonemapping
                 if (!plugin)
                 {
                     logger::info(
-                        "[Weather Sync] [{}] Auto CS Tonemapping "
+                        "[Auto CS Tonemapping] [{}] "
                         "target plugin is not loaded: {}",
                         profile.id,
                         pluginName);
@@ -382,7 +381,7 @@ namespace MPL::AutoCSTonemapping
         if (!filmicDetected && !whitePointDetected)
         {
             logger::info(
-                "[Weather Sync] Auto CS Tonemapping found {} "
+                "[Auto CS Tonemapping] Found {} "
                 "target Image Space(s), but no active CS "
                 "Tonemapping configuration was detected",
                 targets.size());
@@ -403,7 +402,7 @@ namespace MPL::AutoCSTonemapping
             setting->SetFloat(kWhiteScale);
         }
         logger::info(
-            "[Weather Sync] Auto CS Tonemapping applied white "
+            "[Auto CS Tonemapping] Applied white "
             "0.1 to {} Image Space(s); detected by filmic INI={}, "
             "existing white point={}",
             targets.size(),

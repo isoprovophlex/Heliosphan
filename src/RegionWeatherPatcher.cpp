@@ -59,7 +59,7 @@ namespace MPL::RegionWeatherPatcher
         }
 
         std::string EditorID(
-            API::ServiceMap* a_mmsf,
+            API::MMSF::Interface* a_mmsf,
             const RE::TESForm* a_form)
         {
             return a_mmsf && a_form ?
@@ -68,7 +68,7 @@ namespace MPL::RegionWeatherPatcher
         }
 
         template <class T>
-        T* LookupForm(API::ServiceMap* a_mmsf, const std::string_view a_editorID)
+        T* LookupForm(API::MMSF::Interface* a_mmsf, const std::string_view a_editorID)
         {
             if (!a_mmsf || a_editorID.empty())
             {
@@ -188,7 +188,7 @@ namespace MPL::RegionWeatherPatcher
         const std::string_view a_profile,
         const std::string_view a_weatherPrefix,
         const std::string_view a_regionPrefix,
-        API::ServiceMap* a_mmsf,
+        API::MMSF::Interface* a_mmsf,
         const bool a_detailedLogging)
     {
         if (!a_settings.enabled)
@@ -210,7 +210,7 @@ namespace MPL::RegionWeatherPatcher
         {
             logger::warn(
                 "[Weather Sync] [{}] [Region Weather] Startup patching "
-                "requires weatherPrefix and windowSync.regionPrefix",
+                "requires weatherSync.weatherPrefix and weatherSync.regionPrefix",
                 a_profile);
             return;
         }

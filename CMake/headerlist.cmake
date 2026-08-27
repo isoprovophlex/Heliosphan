@@ -1,1 +1,1 @@
-file(GLOB headers "include/**.h")
+file(GLOB headers CONFIGURE_DEPENDS "include/**.h")

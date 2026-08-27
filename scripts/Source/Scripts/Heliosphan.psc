@@ -1,4 +1,4 @@
-Scriptname WeatherSync Hidden
+Scriptname Heliosphan Hidden
 
 Function SetWeatherInstant(Weather akWeather, bool abOverride = false) global native
 Bool Function GetWeatherSyncDetailedLogging(String asProfile) global native

@@ -2,7 +2,7 @@
 
 #include <AutoCSTonemapping.h>
 #include <WeatherRuntime.h>
-#include <WeatherSync.h>
+#include <Heliosphan.h>
 
 namespace MPL::Papyrus
 {
@@ -17,7 +17,7 @@ namespace MPL::Papyrus
         }
         const auto result =
             WeatherRuntime::SetWeatherInstant(a_weather, a_override);
-        if (WeatherSync::IsDetailedLoggingEnabled())
+        if (Heliosphan::IsDetailedLoggingEnabled())
         {
             logger::info(
                 "[Weather Sync] SetWeatherInstant: weather {:08X} "
@@ -33,14 +33,14 @@ namespace MPL::Papyrus
         RE::StaticFunctionTag*,
         std::string a_profile)
     {
-        return WeatherSync::GetProfileDetailedLogging(a_profile);
+        return Heliosphan::GetProfileDetailedLogging(a_profile);
     }
 
     inline bool GetWeatherSyncNotifications(
         RE::StaticFunctionTag*,
         std::string a_profile)
     {
-        return WeatherSync::GetProfileNotifications(a_profile);
+        return Heliosphan::GetProfileNotifications(a_profile);
     }
 
     inline bool SetWeatherSyncDetailedLogging(
@@ -48,7 +48,7 @@ namespace MPL::Papyrus
         std::string a_profile,
         const bool a_enabled)
     {
-        return WeatherSync::SetProfileDetailedLogging(
+        return Heliosphan::SetProfileDetailedLogging(
             a_profile,
             a_enabled);
     }
@@ -58,7 +58,7 @@ namespace MPL::Papyrus
         std::string a_profile,
         const bool a_enabled)
     {
-        return WeatherSync::SetProfileNotifications(
+        return Heliosphan::SetProfileNotifications(
             a_profile,
             a_enabled);
     }
@@ -84,31 +84,31 @@ namespace MPL::Papyrus
     {
         a_vm->RegisterFunction(
             "SetWeatherInstant",
-            "WeatherSync",
+            "Heliosphan",
             SetWeatherInstant);
         a_vm->RegisterFunction(
             "GetWeatherSyncDetailedLogging",
-            "WeatherSync",
+            "Heliosphan",
             GetWeatherSyncDetailedLogging);
         a_vm->RegisterFunction(
             "GetWeatherSyncNotifications",
-            "WeatherSync",
+            "Heliosphan",
             GetWeatherSyncNotifications);
         a_vm->RegisterFunction(
             "SetWeatherSyncDetailedLogging",
-            "WeatherSync",
+            "Heliosphan",
             SetWeatherSyncDetailedLogging);
         a_vm->RegisterFunction(
             "SetWeatherSyncNotifications",
-            "WeatherSync",
+            "Heliosphan",
             SetWeatherSyncNotifications);
         a_vm->RegisterFunction(
             "GetAutoCSTonemapping",
-            "WeatherSync",
+            "Heliosphan",
             GetAutoCSTonemapping);
         a_vm->RegisterFunction(
             "SetAutoCSTonemapping",
-            "WeatherSync",
+            "Heliosphan",
             SetAutoCSTonemapping);
         return true;
     }

@@ -1,5 +1,5 @@
 #include <RoomMarkerPatcher.h>
-#include <WeatherSync.h>
+#include <Heliosphan.h>
 #include <algorithm>
 #include <atomic>
 #include <cctype>
@@ -49,10 +49,10 @@ namespace MPL::RoomMarkerPatcher
             std::format_string<Args...> a_format,
             Args&&... a_args)
         {
-            if (WeatherSync::IsDetailedLoggingEnabled())
+            if (Heliosphan::IsDetailedLoggingEnabled())
             {
                 logger::info(
-                    "[Weather Sync] [RoomMarker] {}",
+                    "[Room Marker] {}",
                     std::format(
                         a_format,
                         std::forward<Args>(a_args)...));

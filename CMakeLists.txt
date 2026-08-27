@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.40)
 
-set(NAME "WeatherSync" CACHE STRING "")
+set(NAME "Heliosphan" CACHE STRING "")
 set(VERSION 0.1.0.0 CACHE STRING "")
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
@@ -64,16 +64,19 @@ target_include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${CMAKE_CURRENT_SOURCE_DIR}/extern/LumaUtil/include
     ${CMAKE_CURRENT_SOURCE_DIR}/extern/MMSF/include
-    ${CMAKE_CURRENT_SOURCE_DIR}/extern/XEMIUtil/include
 )
 
 find_package(reflectcpp CONFIG REQUIRED)
+find_package(nlohmann_json CONFIG REQUIRED)
+find_package(ZLIB REQUIRED)
 
 target_link_libraries(
   ${PROJECT_NAME}
   PRIVATE
     CommonLibSSE::CommonLibSSE
+    nlohmann_json::nlohmann_json
     reflectcpp::reflectcpp
+    ZLIB::ZLIB
 )
 
 target_precompile_headers(${PROJECT_NAME} PRIVATE include/PCH.h)

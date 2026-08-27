@@ -1,12 +1,15 @@
 #include <AutoCSTonemapping.h>
+#include <ExternalEmittance.h>
 #include <LumaClient.h>
+#include <LightPlacer.h>
+#include <ObjectOverrides.h>
 #include <Papyrus.h>
 #include <Plugin.h>
 #include <REL/Version.h>
 #include <SKSE/API.h>
 #include <WeatherRuntime.h>
-#include <WeatherSync.h>
-#include <WeatherSyncAPI.h>
+#include <Heliosphan.h>
+#include <HeliosphanAPI.h>
 #include <WindowSync.h>
 
 namespace
@@ -26,21 +29,22 @@ namespace
             if (!lumaReady)
             {
                 logger::critical(
-                    "WeatherSync requires LumaUtil API version {}; "
-                    "WeatherSync will remain inactive",
+                    "Heliosphan requires LumaUtil API version {}; "
+                    "Heliosphan will remain inactive",
                     MPL::LumaAPI::kVersion);
                 break;
             }
-            MPL::WeatherSync::LoadConfiguration();
-            MPL::WindowSync::RegisterObjectOverrideProjection();
+            MPL::Heliosphan::LoadConfiguration();
             break;
         case SKSE::MessagingInterface::kDataLoaded:
             if (!lumaReady)
             {
                 break;
             }
-            MPL::WeatherSync::OnDataLoaded();
+            MPL::Heliosphan::OnDataLoaded();
             MPL::WindowSync::Initialize();
+            MPL::ExternalEmittance::InstallReferenceInitializationHook();
+            MPL::ExternalEmittance::ScheduleDirectReferenceReplay();
             if (auto* tasks = SKSE::GetTaskInterface())
             {
                 tasks->AddTask(
@@ -58,14 +62,18 @@ namespace
             }
             break;
         case SKSE::MessagingInterface::kPreLoadGame:
+            MPL::ObjectOverrides::Patches::BeginGameLoad();
+            MPL::ExternalEmittance::BeginGameLoad();
             MPL::WindowSync::Reset();
-            MPL::WeatherSync::Reset();
+            MPL::Heliosphan::Reset();
             break;
         case SKSE::MessagingInterface::kPostLoadGame:
         case SKSE::MessagingInterface::kNewGame:
             if (lumaReady)
             {
-                MPL::WeatherSync::OnGameLoaded();
+                MPL::ObjectOverrides::Patches::BeginGameLoad();
+                MPL::ExternalEmittance::BeginGameLoad();
+                MPL::Heliosphan::OnGameLoaded();
             }
             break;
         default:
@@ -100,22 +108,29 @@ namespace
 
     void Revert(SKSE::SerializationInterface*)
     {
+        MPL::ObjectOverrides::Patches::BeginGameLoad();
+        MPL::ExternalEmittance::BeginGameLoad();
         MPL::WindowSync::Reset();
-        MPL::WeatherSync::Reset();
+        MPL::Heliosphan::Reset();
     }
 
-    const MPL::WeatherSyncAPI::Interface api{
-        .version = MPL::WeatherSyncAPI::kVersion,
+    const MPL::HeliosphanAPI::Interface api{
+        .version = MPL::HeliosphanAPI::kVersion,
         .SetWeatherInstant = MPL::WeatherRuntime::SetWeatherInstant,
+        .RegisterLightPlacerTransformer =
+            MPL::LightPlacer::RegisterTransformer,
+        .RequestLightPlacerReload = MPL::LightPlacer::RequestReload,
+        .RegisterReferenceClient =
+            MPL::ExternalEmittance::RegisterReferenceClient,
     };
 }  // namespace
 
 extern "C" __declspec(dllexport)
-const MPL::WeatherSyncAPI::Interface*
-WeatherSync_RequestAPI(
+const MPL::HeliosphanAPI::Interface*
+Heliosphan_RequestAPI(
     const std::uint32_t a_version)
 {
-    return a_version == MPL::WeatherSyncAPI::kVersion ?
+    return a_version == MPL::HeliosphanAPI::kVersion ?
                std::addressof(api) :
                nullptr;
 }
@@ -141,4 +156,4 @@ SKSEPluginInfo(
             MPL::Plugin::MINOR,
             MPL::Plugin::PATCH,
             0 },
-    .Name = "WeatherSync"sv, .Author = "isoprovophlex"sv, .SupportEmail = ""sv, .StructCompatibility = SKSE::StructCompatibility::Independent, .RuntimeCompatibility = SKSE::VersionIndependence::AddressLibrary)
+    .Name = "Heliosphan"sv, .Author = "isoprovophlex"sv, .SupportEmail = ""sv, .StructCompatibility = SKSE::StructCompatibility::Independent, .RuntimeCompatibility = SKSE::VersionIndependence::AddressLibrary)
