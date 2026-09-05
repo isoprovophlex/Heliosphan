@@ -165,6 +165,25 @@ namespace MPL::HeliosphanLogic
                a_hasWhitelistedReferenceMatch;
     }
 
+    std::chrono::milliseconds ReadinessWatchdogDelay(
+        std::optional<std::chrono::steady_clock::time_point>& a_deadline,
+        const bool a_hasCell,
+        const std::chrono::steady_clock::time_point a_now,
+        const std::chrono::milliseconds a_timeout)
+    {
+        if (!a_hasCell)
+        {
+            a_deadline.reset();
+            return a_timeout;
+        }
+        if (!a_deadline)
+        {
+            a_deadline = a_now + a_timeout;
+        }
+        return a_now >= *a_deadline ? std::chrono::milliseconds::zero() :
+            std::chrono::ceil<std::chrono::milliseconds>(*a_deadline - a_now);
+    }
+
     bool IsPluginLoaded(
         const bool a_fullPluginLoaded,
         const bool a_lightPluginLoaded)

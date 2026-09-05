@@ -256,6 +256,7 @@ namespace MPL::Heliosphan
             bool gameLoadPending = false;
             std::uint32_t readinessPollAttempts = 0;
             std::chrono::steady_clock::time_point readinessStarted;
+            std::optional<std::chrono::steady_clock::time_point> watchdogDeadline;
             std::string readinessLastIssue;
             std::uint64_t generation = 0;
             MPL::API::MMSF::Interface* mmsf = nullptr;
@@ -782,10 +783,16 @@ namespace MPL::Heliosphan
             const std::size_t a_profile,
             const std::uint64_t a_generation)
         {
+            const auto& profiles = GetState().profiles;
+            if (a_profile >= profiles.size() || !profiles[a_profile].notifications)
+            {
+                return;
+            }
             GetScheduler().Schedule(kCurrentWeatherNotificationDelay, [a_profile, a_generation]
                 {
                 auto& state = GetState();
-                if (a_generation != state.generation || a_profile >= state.profiles.size())
+                if (a_generation != state.generation || a_profile >= state.profiles.size() ||
+                    !state.profiles[a_profile].notifications)
                 {
                     return;
                 }
@@ -862,6 +869,16 @@ namespace MPL::Heliosphan
             return hadReleaseTimer;
         }
 
+        void FailTransition(const std::uint64_t a_generation)
+        {
+            ReleaseOwnedOverride();
+            auto& state = GetState();
+            state.activeProfile.reset();
+            ClearPendingTransition(state);
+            FinishSpeedTiming(a_generation);
+            LifecycleTiming::FinishGameLoad();
+        }
+
         void CheckExpiration(std::uint64_t a_generation)
         {
             auto& state = GetState();
@@ -930,10 +947,7 @@ namespace MPL::Heliosphan
                         settings.id);
                     ShowFailureMessageBox(failureMessage);
                 }
-                state.activeProfile.reset();
-                ClearPendingTransition(state);
-                FinishSpeedTiming(a_generation);
-                LifecycleTiming::FinishGameLoad();
+                FailTransition(a_generation);
                 return;
             }
 
@@ -966,7 +980,8 @@ namespace MPL::Heliosphan
             }
 
             auto previousEditorID =
-                showDefaultWeatherApplied ? std::string{} : GetEditorID(state.pendingSource);
+                !showDefaultWeatherApplied && reportProfile && state.profiles[*reportProfile].notifications ?
+                    GetEditorID(state.pendingSource) : std::string{};
             if (previousEditorID.empty())
             {
                 previousEditorID = "<none>";
@@ -1040,38 +1055,38 @@ namespace MPL::Heliosphan
                     LogProfile(
                         settings,
                         "sync failed | exact/region/fallback weather unavailable");
-                    if (showOverrideReleased)
+                    if (settings.notifications)
                     {
-                        ShowNotification(settings, "Weather Override Released");
-                    }
-                    ShowNotification(
-                        settings,
-                        std::format("Interior: {}", entering ? "True" : "False"));
-                    if (showDefaultRegionApplied)
-                    {
+                        if (showOverrideReleased)
+                        {
+                            ShowNotification(settings, "Weather Override Released");
+                        }
                         ShowNotification(
                             settings,
-                            "Previous region not found. Default region applied.");
+                            std::format("Interior: {}", entering ? "True" : "False"));
+                        if (showDefaultRegionApplied)
+                        {
+                            ShowNotification(
+                                settings,
+                                "Previous region not found. Default region applied.");
+                        }
+                        ShowNotification(
+                            settings,
+                            std::format("Current Region: {}", CurrentRegionEditorID()));
+                        ShowNotification(
+                            settings,
+                            std::format("Previous Weather: {}", previousEditorID));
+                        ShowNotification(
+                            settings,
+                            std::format("Target Weather: {} (Not Found)", targetEditorID));
+                        ScheduleCurrentWeatherNotification(profile, a_generation);
                     }
-                    ShowNotification(
-                        settings,
-                        std::format("Current Region: {}", CurrentRegionEditorID()));
-                    ShowNotification(
-                        settings,
-                        std::format("Previous Weather: {}", previousEditorID));
-                    ShowNotification(
-                        settings,
-                        std::format("Target Weather: {} (Not Found)", targetEditorID));
-                    ScheduleCurrentWeatherNotification(profile, a_generation);
                     const auto failureMessage = std::format(
                         "{}: Weather sync has failed. Please report.",
                         settings.id);
                     ShowFailureMessageBox(failureMessage);
                 }
-                state.activeProfile.reset();
-                ClearPendingTransition(state);
-                FinishSpeedTiming(a_generation);
-                LifecycleTiming::FinishGameLoad();
+                FailTransition(a_generation);
                 return;
             }
 
@@ -1088,19 +1103,22 @@ namespace MPL::Heliosphan
 
             const auto result =
                 WeatherRuntime::SetWeatherInstant(target, entering);
-            LogDetailed(
-                "transition=complete | generation={} | cell={} | profile={} | direction={} | source={} | target={} | selection={} | status={} | lights={}",
-                a_generation,
-                destinationCell ?
-                    std::format("{:08X}", destinationCell->formID) :
-                    "<none>",
-                DescribeProfile(reportProfile),
-                entering ? "enter" : "exit",
-                DescribeWeather(sourceWeather),
-                DescribeWeather(target),
-                selection,
-                static_cast<std::uint32_t>(result.status),
-                result.lightCount);
+            if (DetailedLogsEnabled())
+            {
+                LogDetailed(
+                    "transition=complete | generation={} | cell={} | profile={} | direction={} | source={} | target={} | selection={} | status={} | lights={}",
+                    a_generation,
+                    destinationCell ?
+                        std::format("{:08X}", destinationCell->formID) :
+                        "<none>",
+                    DescribeProfile(reportProfile),
+                    entering ? "enter" : "exit",
+                    DescribeWeather(sourceWeather),
+                    DescribeWeather(target),
+                    selection,
+                    static_cast<std::uint32_t>(result.status),
+                    result.lightCount);
+            }
             if (entering)
             {
                 const auto profile = *destinationProfile;
@@ -1120,7 +1138,7 @@ namespace MPL::Heliosphan
                 }
             }
 
-            if (reportProfile)
+            if (reportProfile && state.profiles[*reportProfile].notifications)
             {
                 const auto profile = *reportProfile;
                 if (showOverrideReleased)
@@ -1219,6 +1237,10 @@ namespace MPL::Heliosphan
             const bool a_requireRegion,
             const std::string_view a_phase)
         {
+            if (!DetailedLogsEnabled())
+            {
+                return;
+            }
             const auto elapsed =
                 a_state.readinessStarted ==
                         std::chrono::steady_clock::time_point{} ?
@@ -1323,6 +1345,13 @@ namespace MPL::Heliosphan
                 HeliosphanLogic::IsReadinessBudgetActive(
                     state.gameLoadPending,
                     cell != nullptr);
+            const auto now = std::chrono::steady_clock::now();
+            if (budgetActive && !state.watchdogDeadline)
+            {
+                state.readinessStarted = now;
+            }
+            HeliosphanLogic::ReadinessWatchdogDelay(
+                state.watchdogDeadline, budgetActive, now, kSkyUpdateWatchdogDelay);
             if (budgetActive)
             {
                 ++state.readinessPollAttempts;
@@ -1348,9 +1377,7 @@ namespace MPL::Heliosphan
                 ObjectOverrides::Patches::CompleteGameLoad(nullptr);
                 ExternalEmittance::ReplayCell(nullptr);
                 state.readinessPollAttempts = 0;
-                ReleaseOwnedOverride();
-                state.activeProfile.reset();
-                ClearPendingTransition(state);
+                FailTransition(a_generation);
                 return;
             }
 
@@ -1384,12 +1411,19 @@ namespace MPL::Heliosphan
             }
 
             auto* player = RE::PlayerCharacter::GetSingleton();
-            if (!HeliosphanLogic::IsReadinessBudgetActive(
-                    state.gameLoadPending,
-                    player && player->GetParentCell()))
+            const bool budgetActive = HeliosphanLogic::IsReadinessBudgetActive(
+                state.gameLoadPending, player && player->GetParentCell());
+            const auto now = std::chrono::steady_clock::now();
+            if (budgetActive && !state.watchdogDeadline)
+            {
+                state.readinessStarted = now;
+            }
+            const auto remaining = HeliosphanLogic::ReadinessWatchdogDelay(
+                state.watchdogDeadline, budgetActive, now, kSkyUpdateWatchdogDelay);
+            if (remaining > 0ms)
             {
                 GetScheduler().Schedule(
-                    kSkyUpdateWatchdogDelay,
+                    remaining,
                     [a_generation]
                     { RunReadinessWatchdog(a_generation); });
                 return;
@@ -1440,15 +1474,19 @@ namespace MPL::Heliosphan
             state.pendingDefaultWeatherNotification = a_usedDefaultWeather;
             state.readinessPollAttempts = 0;
             state.readinessStarted = std::chrono::steady_clock::now();
+            state.watchdogDeadline = state.readinessStarted + kSkyUpdateWatchdogDelay;
             state.readinessLastIssue.clear();
-            LogDetailed(
-                "transition=request | generation={} | cell={} | profile={} | source={}",
-                generation,
-                a_destinationCell ?
-                    std::format("{:08X}", a_destinationCell->formID) :
-                    "<none>",
-                DescribeProfile(a_destinationProfile),
-                DescribeWeather(a_sourceWeather));
+            if (DetailedLogsEnabled())
+            {
+                LogDetailed(
+                    "transition=request | generation={} | cell={} | profile={} | source={}",
+                    generation,
+                    a_destinationCell ?
+                        std::format("{:08X}", a_destinationCell->formID) :
+                        "<none>",
+                    DescribeProfile(a_destinationProfile),
+                    DescribeWeather(a_sourceWeather));
+            }
             MarkWeatherScheduled(
                 a_destinationCell,
                 generation);
@@ -2361,6 +2399,7 @@ namespace MPL::Heliosphan
         }
         if (!a_sourceWeather)
         {
+            const auto cancelledGeneration = state.generation;
             AdvanceGeneration(state);
             if (!destination)
             {
@@ -2373,8 +2412,7 @@ namespace MPL::Heliosphan
                     ShowNotification(state.profiles[*releaseProfile], "Weather Override Released");
                 }
             }
-            state.activeProfile.reset();
-            ClearPendingTransition(state);
+            FailTransition(cancelledGeneration);
             logger::warn("[Weather Sync] transition weather capture failed | active weather unavailable");
             return;
         }
@@ -2383,11 +2421,14 @@ namespace MPL::Heliosphan
         {
             state.activeProfile = destination;
             ClearPendingTransition(state);
-            LogDetailed(
-                "transition=skip | cell={} | profile={} | weather={} | reason=already-synchronized",
-                a_cell ? std::format("{:08X}", a_cell->formID) : "<none>",
-                DescribeProfile(destination),
-                DescribeWeather(a_sourceWeather));
+            if (DetailedLogsEnabled())
+            {
+                LogDetailed(
+                    "transition=skip | cell={} | profile={} | weather={} | reason=already-synchronized",
+                    a_cell ? std::format("{:08X}", a_cell->formID) : "<none>",
+                    DescribeProfile(destination),
+                    DescribeWeather(a_sourceWeather));
+            }
             return;
         }
         if (!destination && !state.ownedOverride && sourceProfile)
@@ -2528,6 +2569,7 @@ namespace MPL::Heliosphan
                 state.readinessPollAttempts = 0;
                 state.readinessStarted =
                     std::chrono::steady_clock::now();
+                state.watchdogDeadline.reset();
                 state.readinessLastIssue.clear();
                 const auto generation = state.generation;
                 ScheduleReadinessPoll(generation);
@@ -2549,6 +2591,7 @@ namespace MPL::Heliosphan
                 state.gameLoadPending = false;
                 state.readinessPollAttempts = 0;
                 state.readinessStarted = {};
+                state.watchdogDeadline.reset();
                 state.readinessLastIssue.clear();
                 ClearPendingTransition(state);
             });

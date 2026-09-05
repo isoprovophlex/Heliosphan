@@ -4,6 +4,7 @@
 #include <FormResolver.h>
 #include <Heliosphan.h>
 #include <HeliosphanLogic.h>
+#include <LightPlacerRuntime.h>
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -56,7 +57,8 @@ namespace MPL::LightPlacer
 
         std::mutex brokerLock;
         std::vector<ConfiguredProfile> configuredProfiles;
-        std::vector<PatchRule> retainedRules;
+        using RuleSnapshot = std::shared_ptr<const std::vector<PatchRule>>;
+        RuleSnapshot retainedRules;
         std::vector<RegisteredTransformer> transformers;
         FormSet watchedBases;
         FormSet watchedReferences;
@@ -69,6 +71,7 @@ namespace MPL::LightPlacer
             configurationFiles;
         bool configurationFilesComplete = true;
         std::atomic<std::uint64_t> reloadGeneration{ 0 };
+        Detail::FileRestores pendingRestores;
 
         struct PatchStats
         {
@@ -82,6 +85,15 @@ namespace MPL::LightPlacer
             std::size_t transformerFailures = 0;
             std::size_t fileFailures = 0;
         };
+
+        struct PartitionedFile
+        {
+            std::string document;
+            PatchStats stats;
+        };
+
+        RuleSnapshot partitionRules;
+        std::vector<PartitionedFile> partitionedFiles;
 
         bool IEquals(const std::string_view a_lhs, const std::string_view a_rhs)
         {
@@ -139,16 +151,9 @@ namespace MPL::LightPlacer
                 *lights,
                 [&](const Json& a_light)
                 {
-                    const auto data = a_light.is_object() ?
-                                          a_light.find("data") :
-                                          a_light.end();
-                    const auto light =
-                        data != a_light.end() && data->is_object() ?
-                            data->find("light") :
-                            data->end();
-                    return light != data->end() && light->is_string() &&
-                           a_lights.contains(NormalizeIdentifier(
-                               light->get_ref<const std::string&>()));
+                    const auto* light = Detail::LightName(a_light);
+                    return light &&
+                           a_lights.contains(NormalizeIdentifier(*light));
                 });
         }
 
@@ -174,7 +179,7 @@ namespace MPL::LightPlacer
             stream.write(
                 a_content.data(),
                 static_cast<std::streamsize>(a_content.size()));
-            stream.flush();
+            stream.close();
             return static_cast<bool>(stream);
         }
 
@@ -295,14 +300,9 @@ namespace MPL::LightPlacer
                         {
                             continue;
                         }
-                        const auto data = lightEntry.find("data");
-                        const auto light =
-                            data != lightEntry.end() && data->is_object() ?
-                                data->find("light") :
-                                data->end();
-                        if (light == data->end() || !light->is_string() ||
-                            !a_rule.lights.contains(NormalizeIdentifier(
-                                light->get_ref<const std::string&>())))
+                        const auto* light = Detail::LightName(lightEntry);
+                        if (!light ||
+                            !a_rule.lights.contains(NormalizeIdentifier(*light)))
                         {
                             continue;
                         }
@@ -743,21 +743,65 @@ namespace MPL::LightPlacer
             return changed;
         }
 
-        void EditConfigs(
-            const std::vector<PatchRule>& a_rules,
+        void PreparePartitions(const RuleSnapshot& a_rules)
+        {
+            if (partitionRules == a_rules &&
+                partitionedFiles.size() == configurationFiles->size())
+            {
+                return;
+            }
+            std::vector<PartitionedFile> prepared;
+            prepared.reserve(configurationFiles->size());
+            for (const auto& file : *configurationFiles)
+            {
+                auto& partition = prepared.emplace_back();
+                if (!a_rules || a_rules->empty() ||
+                    file.original.find("externalEmittance") == std::string::npos)
+                {
+                    continue;
+                }
+                Json document = file.document;
+                if (document.is_discarded() || !document.is_array())
+                {
+                    logger::warn(
+                        "{} parse failed | file='{}' | partition unchanged",
+                        kLogPrefix,
+                        file.path.string());
+                    continue;
+                }
+                bool changed = false;
+                for (auto& source : document)
+                {
+                    if (source.is_object())
+                    {
+                        changed |= PatchSource(source, *a_rules, partition.stats);
+                    }
+                }
+                if (changed)
+                {
+                    partition.document = document.dump(4);
+                }
+            }
+            partitionedFiles = std::move(prepared);
+            partitionRules = a_rules;
+        }
+
+        bool EditConfigs(
+            const RuleSnapshot& a_rules,
             const std::vector<RegisteredTransformer>& a_transformers,
-            PatchStats& a_stats,
-            std::unordered_map<std::string, std::string>& a_backups)
+            PatchStats& a_stats)
         {
             InitializeConfigurationFiles();
             const auto files = configurationFiles;
             if (!files || files->empty())
             {
-                return;
+                return true;
             }
+            PreparePartitions(a_rules);
 
-            for (const auto& file : *files)
+            for (std::size_t index = 0; index < files->size(); ++index)
             {
+                const auto& file = (*files)[index];
                 ++a_stats.filesScanned;
                 const auto& original = file.original;
                 if (original.empty())
@@ -774,37 +818,14 @@ namespace MPL::LightPlacer
                     continue;
                 }
 
-                std::string transformed = original;
-                bool changed = false;
-                if (!a_rules.empty() &&
-                    original.find("externalEmittance") != std::string::npos)
-                {
-                    Json document = file.document;
-                    if (document.is_discarded() || !document.is_array())
-                    {
-                        logger::warn(
-                "{} parse failed | file='{}' | partition unchanged",
-                            kLogPrefix,
-                            file.path.string());
-                    }
-                    else
-                    {
-                        for (auto& source : document)
-                        {
-                            if (source.is_object())
-                            {
-                                changed |= PatchSource(
-                                    source,
-                                    a_rules,
-                                    a_stats);
-                            }
-                        }
-                        if (changed)
-                        {
-                            transformed = document.dump(4);
-                        }
-                    }
-                }
+                const auto& partition = partitionedFiles[index];
+                a_stats.lightEntriesPatched += partition.stats.lightEntriesPatched;
+                a_stats.lightEntriesSkippedForMalformedFilters +=
+                    partition.stats.lightEntriesSkippedForMalformedFilters;
+                a_stats.referencesPartitioned += partition.stats.referencesPartitioned;
+                a_stats.whitelistFallbackSources += partition.stats.whitelistFallbackSources;
+                bool changed = !partition.document.empty();
+                std::string transformed = changed ? partition.document : original;
 
                 changed |= ApplyTransformers(
                     file.path,
@@ -817,9 +838,8 @@ namespace MPL::LightPlacer
                 }
 
                 const auto path = file.path.string();
-                if (WriteFile(file.path, transformed))
+                if (pendingRestores.Replace(path, original, transformed, WriteFile))
                 {
-                    a_backups.emplace(path, original);
                     ++a_stats.filesPatched;
                 }
                 else
@@ -829,27 +849,46 @@ namespace MPL::LightPlacer
                     "{} temporary write failed | file='{}'",
                         kLogPrefix,
                         path);
+                    return false;
                 }
             }
+            return true;
         }
 
-        bool RestoreConfigs(
-            const std::unordered_map<std::string, std::string>& a_backups)
+        bool RestoreConfigs()
         {
-            bool restored = true;
-            for (const auto& [path, original] : a_backups)
+            return pendingRestores.Restore([](const auto& path, const auto& original)
             {
-                const std::filesystem::path originalPath(path);
-                if (!WriteFile(originalPath, original))
+                if (!WriteFile(path, original))
                 {
-                    restored = false;
                     logger::error(
                     "{} restore failed | file='{}'",
                         kLogPrefix,
                         path);
+                    return false;
+                }
+                return true;
+            });
+        }
+
+        void QueueRestoreRetry()
+        {
+            if (!pendingRestores.Empty())
+            {
+                if (auto* tasks = SKSE::GetTaskInterface())
+                {
+                    tasks->AddTask([]
+                    {
+                        if (!RestoreConfigs())
+                        {
+                            logger::critical(
+                                "{} restore pending | files={} | retry on next reload",
+                                kLogPrefix,
+                                pendingRestores.Size());
+                        }
+                    });
                 }
             }
-            return restored;
         }
 
         bool RunReloadCommand()
@@ -913,7 +952,7 @@ namespace MPL::LightPlacer
         }
 
         void ApplyAndReload(
-            const std::vector<PatchRule>& a_rules,
+            const RuleSnapshot& a_rules,
             const std::vector<RegisteredTransformer>& a_transformers)
         {
             InitializeConfigurationFiles();
@@ -923,16 +962,24 @@ namespace MPL::LightPlacer
                 return;
             }
             PatchStats stats;
-            std::unordered_map<std::string, std::string> backups;
             bool succeeded = false;
             try
             {
-                EditConfigs(
+                if (!RestoreConfigs())
+                {
+                    logger::error(
+                        "{} reload blocked | pending restores={}",
+                        kLogPrefix,
+                        pendingRestores.Size());
+                    QueueRestoreRetry();
+                    NotifyReloadComplete(a_transformers, false);
+                    return;
+                }
+                const bool writesSucceeded = EditConfigs(
                     a_rules,
                     a_transformers,
-                    stats,
-                    backups);
-                if (backups.empty())
+                    stats);
+                if (pendingRestores.Empty())
                 {
                     succeeded = stats.transformerFailures == 0 &&
                                 stats.fileFailures == 0;
@@ -947,9 +994,8 @@ namespace MPL::LightPlacer
                     return;
                 }
 
-                const bool reloaded = RunReloadCommand();
-                const bool restored = RestoreConfigs(backups);
-                backups.clear();
+                const bool reloaded = writesSucceeded && RunReloadCommand();
+                const bool restored = RestoreConfigs();
                 succeeded = reloaded && restored &&
                             stats.transformerFailures == 0 &&
                             stats.fileFailures == 0;
@@ -969,21 +1015,22 @@ namespace MPL::LightPlacer
             }
             catch (const std::exception& error)
             {
-                RestoreConfigs(backups);
+                const bool restored = RestoreConfigs();
                 logger::error(
                 "{} broker failed | restored={} | {}",
                     kLogPrefix,
-                    backups.size(),
+                    restored,
                     error.what());
             }
             catch (...)
             {
-                RestoreConfigs(backups);
+                const bool restored = RestoreConfigs();
                 logger::error(
                 "{} broker failed | restored={} | unknown exception",
                     kLogPrefix,
-                    backups.size());
+                    restored);
             }
+            QueueRestoreRetry();
             NotifyReloadComplete(a_transformers, succeeded);
         }
 
@@ -998,7 +1045,7 @@ namespace MPL::LightPlacer
                     {
                         return;
                     }
-                    std::vector<PatchRule> rules;
+                    RuleSnapshot rules;
                     std::vector<RegisteredTransformer> callbacks;
                     {
                         std::scoped_lock lock(brokerLock);
@@ -1090,7 +1137,7 @@ namespace MPL::LightPlacer
     {
         std::scoped_lock lock(brokerLock);
         configuredProfiles.clear();
-        retainedRules.clear();
+        retainedRules.reset();
         watchedBases.clear();
         watchedReferences.clear();
         placementFilterPrepared = false;
@@ -1277,18 +1324,10 @@ namespace MPL::LightPlacer
                                 {
                                     continue;
                                 }
-                                const auto data = lightEntry.find("data");
-                                const auto light =
-                                    data != lightEntry.end() &&
-                                            data->is_object() ?
-                                        data->find("light") :
-                                        data->end();
-                                if (light == data->end() ||
-                                    !light->is_string() ||
+                                const auto* light = Detail::LightName(lightEntry);
+                                if (!light ||
                                     !filteredLights.contains(
-                                        NormalizeIdentifier(
-                                            light->get_ref<
-                                                const std::string&>())))
+                                        NormalizeIdentifier(*light)))
                                 {
                                     continue;
                                 }
@@ -1423,6 +1462,7 @@ namespace MPL::LightPlacer
 
         std::vector<PatchRule> rules;
         rules.reserve(profiles.size());
+        std::unordered_map<RE::FormID, std::vector<RE::FormID>> locationsByCell;
         for (const auto& profile : profiles)
         {
             if (!FormResolver::Resolve(profile.settings.externalEmittance))
@@ -1490,12 +1530,28 @@ namespace MPL::LightPlacer
                         effectiveBase,
                     },
                 };
-                for (auto* location = cell->GetLocation();
-                     location;
-                     location = location->parentLoc)
+                auto [locations, inserted] = locationsByCell.try_emplace(placement.cell);
+                if (inserted)
                 {
-                    source.filterIDs.push_back(location->GetFormID());
+                    std::unordered_set<const RE::BGSLocation*> visited;
+                    for (auto* location = cell->GetLocation();
+                         location;
+                         location = location->parentLoc)
+                    {
+                        if (!visited.insert(location).second)
+                        {
+                            logger::warn(
+                                "{} location cycle | cell={:08X} | location={:08X}",
+                                kLogPrefix,
+                                placement.cell,
+                                location->GetFormID());
+                            break;
+                        }
+                        locations->second.push_back(location->GetFormID());
+                    }
                 }
+                source.filterIDs.insert(
+                    source.filterIDs.end(), locations->second.begin(), locations->second.end());
                 rule.placements.push_back(std::move(source));
             }
             for (std::size_t index = 0;
@@ -1525,14 +1581,15 @@ namespace MPL::LightPlacer
                    a_rule.externalEmittance.empty() ||
                    a_rule.placements.empty();
         });
+        auto snapshot = std::make_shared<const std::vector<PatchRule>>(std::move(a_rules));
         bool queue = false;
         std::size_t ruleCount = 0;
         {
             std::scoped_lock lock(brokerLock);
-            retainedRules = std::move(a_rules);
+            retainedRules = std::move(snapshot);
             startupRulesReady = true;
-            queue = !retainedRules.empty() || deferredReload;
-            ruleCount = retainedRules.size();
+            queue = !retainedRules->empty() || deferredReload;
+            ruleCount = retainedRules->size();
             deferredReload = false;
         }
         if (!queue)

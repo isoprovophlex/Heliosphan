@@ -1,5 +1,6 @@
 #include <PluginIndex.h>
 #include <PluginRecords.h>
+#include <PluginIndexTesting.h>
 
 #include <algorithm>
 #include <array>
@@ -12,6 +13,7 @@
 #include <stdexcept>
 #include <string>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 #include <zlib.h>
 
@@ -260,16 +262,40 @@ namespace MPL::PluginIndex
             };
         }
 
+        struct PluginSource
+        {
+            const RE::TESFile& file;
+
+            RE::FormID GetRuntimeFormID(const RE::FormID a_formID) const
+            {
+                return file.GetRuntimeFormID(a_formID);
+            }
+
+            std::string_view GetFilename() const
+            {
+                return file.GetFilename();
+            }
+
+            bool IsExteriorCell(const RE::FormID a_cellID) const
+            {
+                const auto* cell = a_cellID ?
+                    RE::TESForm::LookupByID<RE::TESObjectCELL>(a_cellID) :
+                    nullptr;
+                return cell && !cell->IsInteriorCell();
+            }
+        };
+
+        template <class Source>
         class Parser
         {
         public:
             Parser(
-                const RE::TESFile& a_file,
+                Source a_file,
                 Result& a_result,
                 const BuildOptions& a_options,
                 const std::unordered_map<RE::FormID, Placement>*
                     a_winningPlacements = nullptr) :
-                file(a_file),
+                file(std::move(a_file)),
                 result(a_result),
                 options(a_options),
                 winningPlacements(a_winningPlacements)
@@ -311,7 +337,8 @@ namespace MPL::PluginIndex
 
             bool ParseRange(
                 const std::uint64_t a_end,
-                const std::optional<RE::FormID> a_cell)
+                const std::optional<RE::FormID> a_cell,
+                const bool a_skipPlacements = false)
             {
                 while (true)
                 {
@@ -355,18 +382,14 @@ namespace MPL::PluginIndex
                         }
                         const auto groupEnd = start + group.size;
                         auto cell = a_cell;
+                        bool skipPlacements = a_skipPlacements;
                         if (group.type == kCellChildren)
                         {
                             const auto cellID =
                                 file.GetRuntimeFormID(group.label);
-                            const auto* runtimeCell = cellID ?
-                                                          RE::TESForm::LookupByID<
-                                                              RE::TESObjectCELL>(
-                                                              cellID) :
-                                                          nullptr;
                             const bool exterior =
-                                options.skipExteriorCells && runtimeCell &&
-                                !runtimeCell->IsInteriorCell();
+                                options.skipExteriorCells &&
+                                file.IsExteriorCell(cellID);
                             const bool excluded =
                                 cellID && options.excludedCells.contains(cellID);
                             if (exterior || excluded)
@@ -379,16 +402,23 @@ namespace MPL::PluginIndex
                                 {
                                     ++result.excludedCellGroupsSkipped;
                                 }
-                                result.cellGroupBytesSkipped +=
-                                    group.size - sizeof(GroupHeader);
-                                stream.seekg(
-                                    static_cast<std::streamoff>(groupEnd),
-                                    std::ios::beg);
-                                continue;
+                                const bool hasRetainedPlacements =
+                                    !result.placements.empty() ||
+                                    (winningPlacements && !winningPlacements->empty());
+                                if (!options.indexReferences || !hasRetainedPlacements)
+                                {
+                                    result.cellGroupBytesSkipped +=
+                                        group.size - sizeof(GroupHeader);
+                                    stream.seekg(
+                                        static_cast<std::streamoff>(groupEnd),
+                                        std::ios::beg);
+                                    continue;
+                                }
+                                skipPlacements = true;
                             }
                             cell = group.label;
                         }
-                        if (!ParseRange(groupEnd, cell))
+                        if (!ParseRange(groupEnd, cell, skipPlacements))
                         {
                             return false;
                         }
@@ -410,6 +440,31 @@ namespace MPL::PluginIndex
                     }
                     const auto recordEnd =
                         start + sizeof(header) + header.dataSize;
+                    if (a_skipPlacements)
+                    {
+                        result.cellGroupBytesSkipped += header.dataSize;
+                        if (options.indexReferences &&
+                            header.signature == kReference && a_cell)
+                        {
+                            ++result.referencesRead;
+                            const auto reference = file.GetRuntimeFormID(header.formID);
+                            if (reference &&
+                                (result.placements.contains(reference) ||
+                                    (winningPlacements && winningPlacements->contains(reference))))
+                            {
+                                // Suppress the older placement without decoding the skipped payload.
+                                if (!StorePlacement(reference, Placement{
+                                        .cell = file.GetRuntimeFormID(*a_cell),
+                                        .deleted = true,
+                                    }))
+                                {
+                                    return false;
+                                }
+                            }
+                        }
+                        stream.seekg(static_cast<std::streamoff>(recordEnd), std::ios::beg);
+                        continue;
+                    }
                     if (options.indexReferences &&
                         header.signature == kReference && a_cell)
                     {
@@ -462,8 +517,8 @@ namespace MPL::PluginIndex
                                     runtimeBase,
                                     cell);
                             const bool replacesSelected =
-                                winningPlacements &&
-                                winningPlacements->contains(reference);
+                                result.placements.contains(reference) ||
+                                (winningPlacements && winningPlacements->contains(reference));
                             if (!selected && !replacesSelected)
                             {
                                 ++result.placementRecordsDiscarded;
@@ -472,26 +527,15 @@ namespace MPL::PluginIndex
                                     std::ios::beg);
                                 continue;
                             }
-                            if (!result.placements.contains(reference) &&
-                                result.placements.size() >=
-                                    kMaxPlacementsPerPlugin)
-                            {
-                                logger::warn(
-                "[Window Sync] index stopped | placements={} | plugin='{}'",
-                                    kMaxPlacementsPerPlugin,
-                                    file.GetFilename());
-                                return Fail(
-                                    "the per-plugin placement limit was reached");
-                            }
-                            PluginRecords::MergePlacement(
-                                result.placements,
-                                reference,
-                                Placement{
+                            if (!StorePlacement(reference, Placement{
                                     .base = runtimeBase,
                                     .cell = cell,
                                     .deleted =
                                         (header.flags & kDeleted) != 0,
-                                });
+                                }))
+                            {
+                                return false;
+                            }
                         }
                     }
                     else if (options.indexStaticEditorIDs &&
@@ -527,7 +571,22 @@ namespace MPL::PluginIndex
                 }
             }
 
-            const RE::TESFile& file;
+            bool StorePlacement(const RE::FormID a_reference, const Placement a_placement)
+            {
+                if (!result.placements.contains(a_reference) &&
+                    result.placements.size() >= kMaxPlacementsPerPlugin)
+                {
+                    logger::warn(
+                        "[Window Sync] index stopped | placements={} | plugin='{}'",
+                        kMaxPlacementsPerPlugin,
+                        file.GetFilename());
+                    return Fail("the per-plugin placement limit was reached");
+                }
+                PluginRecords::MergePlacement(result.placements, a_reference, a_placement);
+                return true;
+            }
+
+            Source file;
             Result& result;
             const BuildOptions& options;
             const std::unordered_map<RE::FormID, Placement>*
@@ -588,14 +647,14 @@ namespace MPL::PluginIndex
             }
         }
 
-        std::vector<const RE::TESFile*> LoadedPlugins()
+        std::optional<std::vector<const RE::TESFile*>> LoadedPlugins()
         {
             std::vector<const RE::TESFile*> plugins;
             auto* dataHandler =
                 RE::TESDataHandler::GetSingleton();
             if (!dataHandler)
             {
-                return plugins;
+                return std::nullopt;
             }
             std::unordered_set<const RE::TESFile*> seen;
             AppendLoadedPlugins(
@@ -608,14 +667,57 @@ namespace MPL::PluginIndex
                 dataHandler->GetLoadedLightModCount(),
                 seen,
                 plugins);
-            return plugins;
+            std::vector<const RE::TESFile*> loadOrder;
+            for (const auto* file : dataHandler->files)
+            {
+                loadOrder.push_back(file);
+            }
+            return PluginRecords::OrderActivePlugins<const RE::TESFile*>(plugins, loadOrder);
         }
     }  // namespace
+
+#ifdef ENABLE_COMMONLIBSSE_TESTING
+    bool Testing::Parse(
+        const std::filesystem::path& a_path,
+        const BuildOptions& a_options,
+        Result& a_result,
+        const std::unordered_map<RE::FormID, Placement>& a_winningPlacements,
+        const std::unordered_set<RE::FormID>& a_exteriorCells)
+    {
+        struct FixtureSource
+        {
+            const std::unordered_set<RE::FormID>& exteriorCells;
+
+            RE::FormID GetRuntimeFormID(const RE::FormID a_formID) const
+            {
+                return a_formID;
+            }
+
+            const char* GetFilename() const
+            {
+                return "fixture.esp";
+            }
+
+            bool IsExteriorCell(const RE::FormID a_cellID) const
+            {
+                return exteriorCells.contains(a_cellID);
+            }
+        };
+        Parser parser(FixtureSource{ a_exteriorCells }, a_result, a_options, &a_winningPlacements);
+        return parser.Parse(a_path);
+    }
+#endif
 
     Result Build(const BuildOptions& a_options)
     {
         Result result;
-        const auto plugins = LoadedPlugins();
+        const auto loadedPlugins = LoadedPlugins();
+        if (!loadedPlugins)
+        {
+            logger::error("[Window Sync] index stopped | active plugin load order unavailable");
+            return result;
+        }
+        const auto& plugins = *loadedPlugins;
         result.pluginsDiscovered = plugins.size();
         const auto recordFailure = [&](const RE::TESFile& a_plugin)
         {
@@ -646,7 +748,7 @@ namespace MPL::PluginIndex
                 {
                     Result parsed;
                     Parser parser(
-                        *plugin,
+                        PluginSource{ *plugin },
                         parsed,
                         preflightOptions);
                     if (!parser.Parse(path))
@@ -702,7 +804,7 @@ namespace MPL::PluginIndex
             {
                 Result parsed;
                 Parser parser(
-                    *plugin,
+                    PluginSource{ *plugin },
                     parsed,
                     parseOptions,
                     std::addressof(result.placements));

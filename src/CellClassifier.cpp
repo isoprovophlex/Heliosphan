@@ -147,7 +147,7 @@ namespace MPL::CellClassifier
 
         bool MatchesBase(const Rule& a_rule, const RE::FormID a_base)
         {
-            return IsStatic(a_base) && a_rule.forms.contains(a_base);
+            return a_rule.forms.contains(a_base) && IsStatic(a_base);
         }
 
         RE::FormID ProjectForProfile(

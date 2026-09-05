@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <chrono>
 #include <map>
 #include <optional>
 #include <string>
@@ -82,6 +83,12 @@ namespace MPL::HeliosphanLogic
     bool IsReadinessBudgetActive(
         bool a_gameLoadPending,
         bool a_hasPlayerCell);
+
+    std::chrono::milliseconds ReadinessWatchdogDelay(
+        std::optional<std::chrono::steady_clock::time_point>& a_deadline,
+        bool a_hasCell,
+        std::chrono::steady_clock::time_point a_now,
+        std::chrono::milliseconds a_timeout);
 
     bool ShouldUseLightPlacerReferenceFallback(
         bool a_filteredRule,

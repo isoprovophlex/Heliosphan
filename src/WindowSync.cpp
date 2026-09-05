@@ -11,6 +11,7 @@
 #include <HeliosphanLogic.h>
 #include <WindowSync.h>
 #include <algorithm>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -41,6 +42,10 @@ namespace MPL::WindowSync
             bool startupPreparationStarted = false;
             RE::FormID lastKnownRegion = 0;
             std::optional<PendingTransition> pending;
+            std::mutex profileCacheLock;
+            std::unordered_map<
+                RE::FormID,
+                std::vector<Heliosphan::WindowSyncProfile>> cellProfiles;
             std::unordered_map<
                 RE::FormID,
                 std::vector<Heliosphan::WindowSyncProfile>>
@@ -84,24 +89,12 @@ namespace MPL::WindowSync
             return formID ? RE::TESForm::LookupByID<RE::TESRegion>(formID) : nullptr;
         }
 
-        void LogDetailed(
-            const Heliosphan::WindowSyncProfile& a_profile,
-            const std::string_view a_message)
-        {
-            if (a_profile.debugLogging)
-            {
-                logger::info("[Window Sync] [{}] {}", a_profile.id, a_message);
-            }
-        }
-
         std::vector<Heliosphan::WindowSyncProfile> ResolveProfiles(
             const std::vector<std::string>& a_profileIDs)
         {
             std::vector<Heliosphan::WindowSyncProfile> profiles;
-            auto profileIDs = a_profileIDs;
-            Heliosphan::SortWindowSyncProfileIDs(profileIDs);
-            profiles.reserve(profileIDs.size());
-            for (const auto& id : profileIDs)
+            profiles.reserve(a_profileIDs.size());
+            for (const auto& id : a_profileIDs)
             {
                 if (auto profile =
                         Heliosphan::GetWindowSyncProfile(id))
@@ -110,6 +103,30 @@ namespace MPL::WindowSync
                 }
             }
             return profiles;
+        }
+
+        const std::vector<Heliosphan::WindowSyncProfile>& GetCellProfiles(
+            const RE::FormID a_cell)
+        {
+            static const std::vector<Heliosphan::WindowSyncProfile> empty;
+            auto& state = GetState();
+            std::scoped_lock lock(state.profileCacheLock);
+            auto& profiles = state.cellProfiles;
+            const auto found = profiles.find(a_cell);
+            if (found != profiles.end())
+            {
+                return found->second;
+            }
+            if (!CellClassifier::IsReady())
+            {
+                return empty;
+            }
+            const auto& profileIDs = CellClassifier::GetProfiles(a_cell);
+            if (profileIDs.empty())
+            {
+                return empty;
+            }
+            return profiles.emplace(a_cell, ResolveProfiles(profileIDs)).first->second;
         }
 
         struct TargetRegionResolution
@@ -189,10 +206,16 @@ namespace MPL::WindowSync
             }
             const auto sunlightShadowsFlag =
                 static_cast<RE::TESObjectCELL::Flag>(1 << 15);
+            const bool detailedLogging =
+                Heliosphan::GetProfileDetailedLogging(a_profile.id);
             std::string appliedFlags;
             const auto recordFlag =
                 [&](const std::string_view a_name, const bool a_value)
             {
+                if (!detailedLogging)
+                {
+                    return;
+                }
                 if (!appliedFlags.empty())
                 {
                     appliedFlags += ", ";
@@ -222,7 +245,7 @@ namespace MPL::WindowSync
                     "SunlightShadows",
                     *a_profile.sunlightShadows);
             }
-            if (a_profile.debugLogging && !appliedFlags.empty())
+            if (!appliedFlags.empty())
             {
                 logger::info(
                     "[Window Sync] {} flags | cell={:08X} | {}",
@@ -230,13 +253,6 @@ namespace MPL::WindowSync
                     a_cell->GetFormID(),
                     appliedFlags);
             }
-        }
-
-        void ApplyIndexedCellSettings(
-            RE::TESObjectCELL* a_cell,
-            const Heliosphan::WindowSyncProfile& a_profile)
-        {
-            ApplyCellFlags(a_cell, a_profile);
         }
 
         void ApplyRoomMarkerCleaning(
@@ -319,11 +335,10 @@ namespace MPL::WindowSync
             extra->skyRegion = a_region;
         }
 
-        bool ResolveMatchedDestination(
-            PendingTransition& a_transition,
-            const std::vector<std::string>& a_profileIDs)
+        bool ResolveMatchedDestination(PendingTransition& a_transition)
         {
-            auto profiles = ResolveProfiles(a_profileIDs);
+            const auto& profiles = GetCellProfiles(
+                a_transition.destination->GetFormID());
             if (profiles.empty())
             {
                 return false;
@@ -420,15 +435,17 @@ namespace MPL::WindowSync
                 return false;
             }
             a_transition.profile = *syncProfile;
-            LogDetailed(
-                *syncProfile,
-                std::format(
-                    "apply | cell={:08X} | region='{}' | layers={} | fallback={} | forced={}",
+            if (Heliosphan::GetProfileDetailedLogging(syncProfile->id))
+            {
+                logger::info(
+                    "[Window Sync] [{}] apply | cell={:08X} | region='{}' | layers={} | fallback={} | forced={}",
+                    syncProfile->id,
                     a_transition.destination->GetFormID(),
                     RegionEditorID(targetRegion),
                     profiles.size(),
                     a_transition.usedDefaultRegion,
-                    targetResolution.forced && !a_transition.usedDefaultRegion));
+                    targetResolution.forced && !a_transition.usedDefaultRegion);
+            }
             return true;
         }
 
@@ -439,7 +456,7 @@ namespace MPL::WindowSync
             a_transition.profile.reset();
             if (!a_profileIDs.empty())
             {
-                ResolveMatchedDestination(a_transition, a_profileIDs);
+                ResolveMatchedDestination(a_transition);
             }
             a_transition.resolved = true;
         }
@@ -485,13 +502,12 @@ namespace MPL::WindowSync
             {
                 return;
             }
-            std::vector<Heliosphan::WindowSyncProfile> profiles;
+            const auto& profiles = GetCellProfiles(a_cell->GetFormID());
             if (!a_profileIDs.empty())
             {
-                profiles = ResolveProfiles(a_profileIDs);
                 for (const auto& profile : profiles)
                 {
-                    ApplyIndexedCellSettings(a_cell, profile);
+                    ApplyCellFlags(a_cell, profile);
                 }
                 ObjectOverrides::ApplyToCell(a_cell, profiles);
             }
@@ -680,11 +696,9 @@ namespace MPL::WindowSync
         {
             return;
         }
-        const auto& profileIDs =
-            CellClassifier::GetProfiles(cell->GetFormID());
         ObjectOverrides::ApplyToReference(
             a_reference,
-            ResolveProfiles(profileIDs));
+            GetCellProfiles(cell->GetFormID()));
     }
 
     void Initialize()

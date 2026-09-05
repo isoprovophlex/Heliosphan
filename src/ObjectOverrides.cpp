@@ -102,17 +102,7 @@ namespace MPL::ObjectOverrides
             const std::string_view a_profile)
         {
             const auto& profiles = GetState().profiles;
-            const auto found = std::ranges::find_if(
-                profiles,
-                [&](const auto& a_entry)
-                {
-                    const auto& id = a_entry.first;
-                    return id.size() == a_profile.size() &&
-                           _strnicmp(
-                               id.data(),
-                               a_profile.data(),
-                               id.size()) == 0;
-                });
+            const auto found = profiles.find(Lowercase(a_profile));
             return found != profiles.end() ?
                        std::addressof(found->second) :
                        nullptr;
@@ -318,7 +308,7 @@ namespace MPL::ObjectOverrides
         {
             return false;
         }
-        if ((filteredOwner && filteredOwner->debugLogging) ||
+        if ((filteredOwner && Heliosphan::GetProfileDetailedLogging(filteredOwner->id)) ||
             (!filteredOwner && GetState().globalDetailedLogging))
         {
             RecordApplication(
@@ -459,25 +449,6 @@ namespace MPL::ObjectOverrides::Patches
                 a_value.y * degreesToRadians,
                 a_value.z * degreesToRadians,
             };
-        }
-
-        std::string Lowercase(const std::string_view a_value)
-        {
-            std::string result(a_value);
-            std::ranges::transform(
-                result,
-                result.begin(),
-                [](const unsigned char a_character)
-                {
-                    return static_cast<char>(std::tolower(a_character));
-                });
-            return result;
-        }
-
-        RE::TESForm* ResolveForm(const std::string_view a_selector)
-        {
-            const auto formID = FormResolver::Resolve(a_selector);
-            return formID ? RE::TESForm::LookupByID(formID) : nullptr;
         }
 
         bool PluginLoaded(

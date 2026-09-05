@@ -5,13 +5,15 @@
 
 namespace RE
 {
+    class TESImageSpace;
     class TESObjectREFR;
     class TESWeather;
 }
 
 namespace MPL::HeliosphanAPI
 {
-    inline constexpr std::uint32_t kVersion = 6;
+    inline constexpr std::uint32_t kVersion = 7;
+    inline constexpr std::uint32_t kLegacyVersion = 6;
 
     struct ReferenceCallbacks
     {
@@ -84,6 +86,8 @@ namespace MPL::HeliosphanAPI
         bool (*SetAutoCSTonemapping)(const char*, bool) = nullptr;
         bool (*IsAutoCSTonemappingApplied)(const char*) = nullptr;
         bool (*SetAutoCSTonemappingSuppressed)(const char*, bool) = nullptr;
+        // The target array is copied; automatic and forced ownership are combined.
+        bool (*SetCSTonemappingForcedTargets)(RE::TESImageSpace* const*, std::size_t) = nullptr;
     };
 
     constexpr bool HasFlag(

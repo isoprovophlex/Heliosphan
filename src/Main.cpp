@@ -162,7 +162,15 @@ namespace
         .SetAutoCSTonemapping = SetAutoCSTonemapping,
         .IsAutoCSTonemappingApplied = IsAutoCSTonemappingApplied,
         .SetAutoCSTonemappingSuppressed = SetAutoCSTonemappingSuppressed,
+        .SetCSTonemappingForcedTargets = MPL::AutoCSTonemapping::SetForcedTargets,
     };
+    const MPL::HeliosphanAPI::Interface legacyV6Api = []
+    {
+        auto result = api;
+        result.version = MPL::HeliosphanAPI::kLegacyVersion;
+        result.SetCSTonemappingForcedTargets = nullptr;
+        return result;
+    }();
     const MPL::HeliosphanAPI::Interface legacyV5Api{
         .version = 5,
         .SetWeatherInstant = MPL::WeatherRuntime::SetWeatherInstant,
@@ -197,6 +205,10 @@ Heliosphan_RequestAPI(
     if (a_version == legacyV5Api.version)
     {
         return std::addressof(legacyV5Api);
+    }
+    if (a_version == legacyV6Api.version)
+    {
+        return std::addressof(legacyV6Api);
     }
     return a_version == legacyV4Api.version ? std::addressof(legacyV4Api) : nullptr;
 }

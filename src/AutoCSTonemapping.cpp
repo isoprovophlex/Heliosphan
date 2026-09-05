@@ -1,11 +1,12 @@
 #include <AutoCSTonemapping.h>
-#include <HeliosphanLogic.h>
 
 #include <algorithm>
 #include <cctype>
 #include <cmath>
 #include <mutex>
+#include <optional>
 #include <ranges>
+#include <unordered_map>
 #include <unordered_set>
 
 namespace MPL::AutoCSTonemapping
@@ -21,6 +22,7 @@ namespace MPL::AutoCSTonemapping
         {
             std::string id;
             Settings settings;
+            std::unordered_set<RE::TESImageSpace*> targets;
             bool suppressed = false;
             bool applied = false;
         };
@@ -29,6 +31,13 @@ namespace MPL::AutoCSTonemapping
         {
             std::mutex lock;
             std::vector<Profile> profiles;
+            std::unordered_map<RE::TESImageSpace*, float> whiteBaselines;
+            std::unordered_set<RE::TESImageSpace*> appliedTargets;
+            std::unordered_set<RE::TESImageSpace*> forcedTargets;
+            std::optional<bool> filmicCurveBaseline;
+            std::optional<float> filmicWhiteScaleBaseline;
+            bool autoDetected = false;
+            bool forcedTargetsRegistered = false;
             bool applied = false;
         };
 
@@ -81,6 +90,103 @@ namespace MPL::AutoCSTonemapping
             return a_imageSpace->GetFile() == a_plugin;
         }
 
+        Profile* FindProfile(State& a_state, const std::string_view a_id)
+        {
+            const auto found = std::ranges::find_if(a_state.profiles,
+                [&](const Profile& a_profile) { return EqualsIgnoreCase(a_profile.id, a_id); });
+            return found != a_state.profiles.end() ? std::addressof(*found) : nullptr;
+        }
+
+        void CaptureBaselines(State& a_state, RE::TESDataHandler* a_dataHandler)
+        {
+            if (const auto* setting = RE::GetINISetting(kFilmicCurveSetting);
+                setting && !a_state.filmicCurveBaseline)
+            {
+                a_state.filmicCurveBaseline = setting->GetBool();
+            }
+            if (const auto* setting = RE::GetINISetting(kFilmicWhiteScaleSetting);
+                setting && !a_state.filmicWhiteScaleBaseline)
+            {
+                a_state.filmicWhiteScaleBaseline = setting->GetFloat();
+            }
+            for (auto* imageSpace : a_dataHandler->GetFormArray<RE::TESImageSpace>())
+            {
+                if (imageSpace)
+                {
+                    a_state.whiteBaselines.try_emplace(imageSpace, imageSpace->data.hdr.white);
+                }
+            }
+        }
+
+        void ApplyProfiles(State& a_state)
+        {
+            auto targets = a_state.forcedTargets;
+            for (auto& profile : a_state.profiles)
+            {
+                profile.applied = a_state.autoDetected &&
+                                  !profile.suppressed &&
+                                  !profile.targets.empty();
+                if (profile.applied)
+                {
+                    targets.insert(
+                        profile.targets.begin(),
+                        profile.targets.end());
+                }
+            }
+
+            for (auto* imageSpace : a_state.appliedTargets)
+            {
+                if (targets.contains(imageSpace))
+                {
+                    continue;
+                }
+                if (const auto baseline =
+                        a_state.whiteBaselines.find(imageSpace);
+                    baseline != a_state.whiteBaselines.end())
+                {
+                    imageSpace->data.hdr.white = baseline->second;
+                }
+            }
+            for (auto* imageSpace : targets)
+            {
+                if (imageSpace && (!a_state.forcedTargetsRegistered || !a_state.appliedTargets.contains(imageSpace)))
+                {
+                    imageSpace->data.hdr.white = kWhitePoint;
+                }
+            }
+            a_state.appliedTargets = std::move(targets);
+
+            const bool forceFilmic = !a_state.appliedTargets.empty() ||
+                (a_state.forcedTargetsRegistered && std::ranges::any_of(
+                    a_state.whiteBaselines, [](const auto& a_entry)
+                    { return IsWhitePoint(a_entry.first->data.hdr.white); }));
+
+            if (auto* setting =
+                    RE::GetINISetting(kFilmicCurveSetting))
+            {
+                setting->SetBool(
+                    !forceFilmic ?
+                        a_state.filmicCurveBaseline.value_or(
+                            setting->GetBool()) :
+                        true);
+            }
+            if (auto* setting =
+                    RE::GetINISetting(kFilmicWhiteScaleSetting))
+            {
+                setting->SetFloat(
+                    !forceFilmic ?
+                        a_state.filmicWhiteScaleBaseline.value_or(
+                            setting->GetFloat()) :
+                        kWhiteScale);
+            }
+
+            logger::info(
+                "[Auto CS Tonemapping] targets={} | forced={} | filmic={}",
+                a_state.appliedTargets.size(),
+                a_state.forcedTargets.size(),
+                forceFilmic);
+        }
+
     }
 
     void ClearProfiles()
@@ -88,6 +194,13 @@ namespace MPL::AutoCSTonemapping
         auto& state = GetState();
         std::scoped_lock lock(state.lock);
         state.profiles.clear();
+        state.whiteBaselines.clear();
+        state.appliedTargets.clear();
+        state.forcedTargets.clear();
+        state.filmicCurveBaseline.reset();
+        state.filmicWhiteScaleBaseline.reset();
+        state.autoDetected = false;
+        state.forcedTargetsRegistered = false;
         state.applied = false;
     }
 
@@ -105,15 +218,8 @@ namespace MPL::AutoCSTonemapping
     {
         auto& state = GetState();
         std::scoped_lock lock(state.lock);
-        const auto found = std::ranges::find_if(
-            state.profiles,
-            [&](const Profile& a_candidate)
-            {
-                return EqualsIgnoreCase(
-                    a_candidate.id,
-                    a_profile);
-            });
-        return found != state.profiles.end() && !found->suppressed;
+        const auto* found = FindProfile(state, a_profile);
+        return found && !found->suppressed;
     }
 
     bool SetProfileEnabled(
@@ -122,15 +228,8 @@ namespace MPL::AutoCSTonemapping
     {
         auto& state = GetState();
         std::scoped_lock lock(state.lock);
-        const auto found = std::ranges::find_if(
-            state.profiles,
-            [&](const Profile& a_candidate)
-            {
-                return EqualsIgnoreCase(
-                    a_candidate.id,
-                    a_profile);
-            });
-        if (found == state.profiles.end())
+        const auto* found = FindProfile(state, a_profile);
+        if (!found)
         {
             logger::error(
                 "[Auto CS Tonemapping] setting rejected | profile={} unknown",
@@ -151,15 +250,8 @@ namespace MPL::AutoCSTonemapping
     {
         auto& state = GetState();
         std::scoped_lock lock(state.lock);
-        const auto found = std::ranges::find_if(
-            state.profiles,
-            [&](const Profile& a_candidate)
-            {
-                return EqualsIgnoreCase(
-                    a_candidate.id,
-                    a_profile);
-            });
-        return found != state.profiles.end() && found->applied;
+        const auto* found = FindProfile(state, a_profile);
+        return found && found->applied;
     }
 
     bool SetProfileSuppressed(
@@ -168,36 +260,55 @@ namespace MPL::AutoCSTonemapping
     {
         auto& state = GetState();
         std::scoped_lock lock(state.lock);
-        const auto found = std::ranges::find_if(
-            state.profiles,
-            [&](const Profile& a_candidate)
-            {
-                return EqualsIgnoreCase(
-                    a_candidate.id,
-                    a_profile);
-            });
-        if (found == state.profiles.end())
+        auto* found = FindProfile(state, a_profile);
+        if (!found)
         {
             return false;
         }
+        if (state.forcedTargetsRegistered && found->suppressed == a_suppressed)
+        {
+            return true;
+        }
         found->suppressed = a_suppressed;
+        if (state.applied)
+        {
+            ApplyProfiles(state);
+        }
+        return true;
+    }
+
+    bool SetForcedTargets(RE::TESImageSpace* const* a_targets, const std::size_t a_count)
+    {
+        auto* dataHandler = RE::TESDataHandler::GetSingleton();
+        if (!dataHandler || (a_count && !a_targets))
+        {
+            return false;
+        }
+        std::unordered_set<RE::TESImageSpace*> targets;
+        for (std::size_t index = 0; index < a_count; ++index)
+        {
+            if (!a_targets[index]) return false;
+            targets.insert(a_targets[index]);
+        }
+        auto& state = GetState();
+        std::scoped_lock lock(state.lock);
+        if (state.forcedTargetsRegistered && state.forcedTargets == targets)
+        {
+            return true;
+        }
+        CaptureBaselines(state, dataHandler);
+        for (auto* imageSpace : targets)
+        {
+            state.whiteBaselines.try_emplace(imageSpace, imageSpace->data.hdr.white);
+        }
+        state.forcedTargetsRegistered = true;
+        state.forcedTargets = std::move(targets);
+        ApplyProfiles(state);
         return true;
     }
 
     void ApplyStartup()
     {
-        std::vector<Profile> profiles;
-        {
-            auto& state = GetState();
-            std::scoped_lock lock(state.lock);
-            if (state.applied)
-            {
-                return;
-            }
-            state.applied = true;
-            profiles = state.profiles;
-        }
-
         auto* dataHandler = RE::TESDataHandler::GetSingleton();
         if (!dataHandler)
         {
@@ -205,21 +316,18 @@ namespace MPL::AutoCSTonemapping
             return;
         }
 
-        struct ProfileTargets
+        auto& state = GetState();
+        std::scoped_lock lock(state.lock);
+        if (state.applied)
         {
-            std::string id;
-            std::unordered_set<RE::TESImageSpace*> imageSpaces;
-        };
-        std::vector<ProfileTargets> profileTargets;
-        std::unordered_set<RE::TESImageSpace*> targets;
-        for (const auto& profile : profiles)
+            return;
+        }
+
+        CaptureBaselines(state, dataHandler);
+
+        for (auto& profile : state.profiles)
         {
-            if (!HeliosphanLogic::ShouldApplyAutoCSTonemapping(
-                    profile.suppressed))
-            {
-                continue;
-            }
-            ProfileTargets matched{ .id = profile.id };
+            profile.targets.clear();
             for (const auto& pluginName :
                  profile.settings.plugins)
             {
@@ -239,74 +347,26 @@ namespace MPL::AutoCSTonemapping
                 {
                     if (HasSourcePlugin(imageSpace, plugin))
                     {
-                        matched.imageSpaces.insert(imageSpace);
-                        targets.insert(imageSpace);
+                        profile.targets.insert(imageSpace);
                     }
                 }
             }
-            if (!matched.imageSpaces.empty())
-            {
-                profileTargets.push_back(std::move(matched));
-            }
-        }
-        if (targets.empty())
-        {
-            return;
         }
 
-        const auto filmicCurve =
-            RE::GetINISetting(kFilmicCurveSetting);
-        const auto filmicDetected =
-            filmicCurve && filmicCurve->GetBool();
+        const auto filmicDetected = state.filmicCurveBaseline.value_or(false);
         const auto whitePointDetected =
             std::ranges::any_of(
-                dataHandler->GetFormArray<RE::TESImageSpace>(),
-                [](const RE::TESImageSpace* a_imageSpace)
+                state.whiteBaselines,
+                [](const auto& a_entry)
                 {
-                    return a_imageSpace &&
-                           IsWhitePoint(
-                               a_imageSpace->data.hdr.white);
+                    return IsWhitePoint(a_entry.second);
                 });
-        if (!filmicDetected && !whitePointDetected)
-        {
-            logger::info(
-                "[Auto CS Tonemapping] targets={} | active=false",
-                targets.size());
-            return;
-        }
-
-        for (auto* imageSpace : targets)
-        {
-            imageSpace->data.hdr.white = kWhitePoint;
-        }
-        {
-            auto& state = GetState();
-            std::scoped_lock lock(state.lock);
-            for (auto& profile : state.profiles)
-            {
-                profile.applied = !profile.suppressed &&
-                                  std::ranges::any_of(
-                                      profileTargets,
-                                      [&](const ProfileTargets& a_targets)
-                                      {
-                                          return EqualsIgnoreCase(
-                                              profile.id,
-                                              a_targets.id);
-                                      });
-            }
-        }
-        if (filmicCurve)
-        {
-            filmicCurve->SetBool(true);
-        }
-        if (auto* setting =
-                RE::GetINISetting(kFilmicWhiteScaleSetting))
-        {
-            setting->SetFloat(kWhiteScale);
-        }
+        state.autoDetected = filmicDetected || whitePointDetected;
+        state.applied = true;
+        ApplyProfiles(state);
         logger::info(
-            "[Auto CS Tonemapping] targets={} | white=0.1 | filmicINI={} | previousWhite={}",
-            targets.size(),
+            "[Auto CS Tonemapping] detected={} | filmicINI={} | previousWhite={}",
+            state.autoDetected,
             filmicDetected,
             whitePointDetected);
     }

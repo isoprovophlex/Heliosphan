@@ -1,8 +1,14 @@
 #pragma once
 
+#include <cstddef>
 #include <string>
 #include <string_view>
 #include <vector>
+
+namespace RE
+{
+    class TESImageSpace;
+}
 
 namespace MPL::AutoCSTonemapping
 {
@@ -19,5 +25,6 @@ namespace MPL::AutoCSTonemapping
     bool SetProfileEnabled(std::string_view a_profile, bool a_enabled);
     bool IsProfileApplied(std::string_view a_profile);
     bool SetProfileSuppressed(std::string_view a_profile, bool a_suppressed);
+    bool SetForcedTargets(RE::TESImageSpace* const* a_targets, std::size_t a_count);
     void ApplyStartup();
 }

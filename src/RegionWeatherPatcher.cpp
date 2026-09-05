@@ -17,8 +17,6 @@ namespace MPL::RegionWeatherPatcher
             RE::TESWeather* weather = nullptr;
             RE::TESGlobal* global = nullptr;
             std::uint32_t chance = 0;
-            std::string sourceEditorID;
-            std::string targetEditorID;
         };
 
         struct Summary
@@ -27,7 +25,6 @@ namespace MPL::RegionWeatherPatcher
             std::size_t patchedRegions = 0;
             std::size_t missingSourceRegions = 0;
             std::size_t missingWeatherData = 0;
-            std::size_t sourceEntries = 0;
             std::size_t copiedEntries = 0;
             std::size_t omittedEntries = 0;
         };
@@ -263,7 +260,6 @@ namespace MPL::RegionWeatherPatcher
                 {
                     continue;
                 }
-                ++summary.sourceEntries;
                 auto sourceWeatherEditorID =
                     EditorID(a_mmsf, sourceType->weather);
                 if (sourceWeatherEditorID.empty())
@@ -302,8 +298,6 @@ namespace MPL::RegionWeatherPatcher
                     .weather = targetWeather,
                     .global = sourceType->global,
                     .chance = sourceType->chance,
-                    .sourceEditorID = std::move(sourceWeatherEditorID),
-                    .targetEditorID = targetWeatherEditorID,
                 });
             }
 
@@ -362,7 +356,6 @@ namespace MPL::RegionWeatherPatcher
             summary.patchedRegions,
             summary.missingSourceRegions,
             summary.missingWeatherData,
-            summary.sourceEntries,
             summary.copiedEntries,
             summary.omittedEntries);
     }

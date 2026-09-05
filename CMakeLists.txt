@@ -110,7 +110,9 @@ if(HELIOSPHAN_BUILD_TESTS)
   add_executable(
     HeliosphanTests
     tests/HeliosphanTests.cpp
+    tests/PluginIndexTests.cpp
     src/HeliosphanLogic.cpp
+    src/PluginIndex.cpp
     src/PluginRecords.cpp
   )
   target_compile_features(HeliosphanTests PRIVATE cxx_std_23)
@@ -124,6 +126,7 @@ if(HELIOSPHAN_BUILD_TESTS)
     PRIVATE
       CommonLibSSE::CommonLibSSE
       nlohmann_json::nlohmann_json
+      ZLIB::ZLIB
   )
   target_compile_definitions(
     HeliosphanTests
@@ -144,6 +147,20 @@ if(HELIOSPHAN_BUILD_TESTS)
   endif()
 
   add_test(NAME HeliosphanTests COMMAND HeliosphanTests)
+
+  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../TuningUtil/src/CSTonemapping.cpp")
+    add_executable(TonemappingOwnershipTests tests/TonemappingOwnershipTests.cpp)
+    target_compile_features(TonemappingOwnershipTests PRIVATE cxx_std_23)
+    target_include_directories(
+      TonemappingOwnershipTests
+      PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/../TuningUtil/include
+    )
+    add_test(NAME TonemappingShared COMMAND TonemappingOwnershipTests shared)
+    add_test(NAME TonemappingStandalone COMMAND TonemappingOwnershipTests standalone)
+    add_test(NAME TonemappingLegacy COMMAND TonemappingOwnershipTests legacy)
+  endif()
 
   set(
     HELIOSPHAN_ADDRESS_LIBRARY_1_7_99
