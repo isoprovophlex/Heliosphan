@@ -259,6 +259,7 @@ namespace MPL::Heliosphan
             std::optional<std::chrono::steady_clock::time_point> watchdogDeadline;
             std::string readinessLastIssue;
             std::uint64_t generation = 0;
+            MPL::API::MMSF::IEDIDCache* edidCache = nullptr;
             MPL::API::MMSF::Interface* mmsf = nullptr;
             SpeedTiming speedTiming;
         };
@@ -649,7 +650,7 @@ namespace MPL::Heliosphan
             {
                 return {};
             }
-            return state.mmsf->LookupEDIDForFormID(a_weather->formID);
+            return state.edidCache->LookupFormID(a_weather->formID);
         }
 
         RE::TESWeather* LookupWeather(std::string_view a_editorID)
@@ -659,11 +660,11 @@ namespace MPL::Heliosphan
             {
                 return nullptr;
             }
-            if (auto* cached = state.mmsf->LookupCachedForm(std::string(a_editorID)))
+            if (auto* cached = state.edidCache->LookupCachedForm(std::string(a_editorID)))
             {
                 return cached->As<RE::TESWeather>();
             }
-            const auto formID = state.mmsf->LookupFormIDForEDID(std::string(a_editorID));
+            const auto formID = state.edidCache->LookupEdid(std::string(a_editorID));
             return formID ? RE::TESForm::LookupByID<RE::TESWeather>(formID) : nullptr;
         }
 
@@ -774,7 +775,7 @@ namespace MPL::Heliosphan
         {
             auto* player = RE::PlayerCharacter::GetSingleton();
             const auto region = RegionRuntime::GetRegion(
-                GetState().mmsf,
+                GetState().edidCache,
                 player ? player->GetParentCell() : nullptr);
             return region.empty() ? "<none>" : region;
         }
@@ -2319,6 +2320,12 @@ namespace MPL::Heliosphan
         return GetState().mmsf;
     }
 
+
+    API::MMSF::IEDIDCache* EDIDCache()
+    {
+        return GetState().edidCache;
+    }
+
     RE::TESWeather* CaptureSourceWeather()
     {
         auto* sky = RE::Sky::GetSingleton();
@@ -2464,6 +2471,7 @@ namespace MPL::Heliosphan
         auto& state = GetState();
         ActivatePendingProfiles(state);
         state.mmsf = MPL::API::MMSF::RequestMMSFAPI();
+        state.edidCache = state.mmsf ? static_cast<API::MMSF::IEDIDCache*>(state.mmsf->QueryService("EDID")) : nullptr;
         state.roomMarkerCleaningActive.assign(state.profiles.size(), false);
         state.roomMarkerAlwaysCleanCells.resize(state.profiles.size());
         PrepareWindowSyncProfilePriorities();
@@ -2550,7 +2558,7 @@ namespace MPL::Heliosphan
                     settings.id,
                     settings.weatherSync.weatherPrefix,
                     settings.weatherSync.regionPrefix,
-                    state.mmsf,
+                    state.edidCache,
                     settings.detailedLogging);
             }
         }

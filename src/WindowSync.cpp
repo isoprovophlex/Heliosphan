@@ -63,14 +63,19 @@ namespace MPL::WindowSync
             return Heliosphan::GetMMSFAPI();
         }
 
+        MPL::API::MMSF::IEDIDCache* EDIDCache()
+        {
+            return Heliosphan::EDIDCache();
+        }
+
         std::string RegionEditorID(RE::TESRegion* a_region)
         {
-            return RegionRuntime::EditorID(MMSF(), a_region);
+            return RegionRuntime::EditorID(EDIDCache(), a_region);
         }
 
         RE::TESRegion* LookupRegion(const std::string_view a_editorID)
         {
-            auto* mmsf = MMSF();
+            auto* mmsf = EDIDCache();
             if (!mmsf || a_editorID.empty())
             {
                 return nullptr;
@@ -79,7 +84,7 @@ namespace MPL::WindowSync
             {
                 return cached->As<RE::TESRegion>();
             }
-            const auto formID = mmsf->LookupFormIDForEDID(std::string(a_editorID));
+            const auto formID = mmsf->LookupEdid(std::string(a_editorID));
             return formID ? RE::TESForm::LookupByID<RE::TESRegion>(formID) : nullptr;
         }
 

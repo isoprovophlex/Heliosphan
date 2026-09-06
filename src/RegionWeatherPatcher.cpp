@@ -1,3 +1,4 @@
+#include "MMSF_API.h"
 #include <RegionWeatherPatcher.h>
 #include <algorithm>
 #include <cctype>
@@ -54,16 +55,16 @@ namespace MPL::RegionWeatherPatcher
         }
 
         std::string EditorID(
-            API::MMSF::Interface* a_mmsf,
+            API::MMSF::IEDIDCache* a_mmsf,
             const RE::TESForm* a_form)
         {
             return a_mmsf && a_form ?
-                       a_mmsf->LookupEDIDForFormID(a_form->formID) :
+                       a_mmsf->LookupFormID(a_form->formID) :
                        std::string{};
         }
 
         template <class T>
-        T* LookupForm(API::MMSF::Interface* a_mmsf, const std::string_view a_editorID)
+        T* LookupForm(API::MMSF::IEDIDCache* a_mmsf, const std::string_view a_editorID)
         {
             if (!a_mmsf || a_editorID.empty())
             {
@@ -75,7 +76,7 @@ namespace MPL::RegionWeatherPatcher
                 return cached->As<T>();
             }
             const auto formID =
-                a_mmsf->LookupFormIDForEDID(std::string(a_editorID));
+                a_mmsf->LookupEdid(std::string(a_editorID));
             return formID ? RE::TESForm::LookupByID<T>(formID) : nullptr;
         }
 
@@ -165,7 +166,7 @@ namespace MPL::RegionWeatherPatcher
         const std::string_view a_profile,
         const std::string_view a_weatherPrefix,
         const std::string_view a_regionPrefix,
-        API::MMSF::Interface* a_mmsf,
+        API::MMSF::IEDIDCache* a_mmsf,
         const bool a_detailedLogging)
     {
         if (!a_settings.enabled)

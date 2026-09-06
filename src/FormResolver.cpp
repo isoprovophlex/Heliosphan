@@ -69,14 +69,14 @@ namespace MPL::FormResolver
                        0;
         }
 
-        if (auto* mmsf = Heliosphan::GetMMSFAPI())
+        if (auto* mmsf = Heliosphan::EDIDCache())
         {
             const std::string editorID(a_selector);
             if (auto* form = mmsf->LookupCachedForm(editorID))
             {
                 return form->GetFormID();
             }
-            if (const auto formID = mmsf->LookupFormIDForEDID(editorID))
+            if (const auto formID = mmsf->LookupEdid(editorID))
             {
                 return formID;
             }
