@@ -1,3 +1,4 @@
+#include <LumaAPI.h>
 #include <Heliosphan.h>
 #include <LumaCallbackDiagnostics.h>
 #include <LumaClient.h>
@@ -10,8 +11,7 @@ namespace MPL::LumaClient
 {
     namespace
     {
-        HMODULE module = nullptr;
-        const LumaAPI::Interface* api = nullptr;
+        MPL::API::Luma::ILumaPluginService* api = nullptr;
         Diagnostics::CallbackCounters callbackCounters;
         std::atomic_bool callbacksRegistered{ false };
 
@@ -79,7 +79,7 @@ namespace MPL::LumaClient
                 a_hasSkylight);
         }
 
-        const LumaAPI::ClientCallbacks callbacks{
+        const MPL::API::Luma::ClientCallbacks callbacks{
             .id = "Heliosphan",
             .OnReferenceInitialized = OnReferenceInitialized,
             .OnCellChanging = OnCellChanging,
@@ -88,56 +88,72 @@ namespace MPL::LumaClient
         };
     }  // namespace
 
-    bool Load(const std::string_view a_phase)
+       bool Load(const std::string_view a_phase)
     {
         callbacksRegistered.store(false, std::memory_order_relaxed);
-        module = GetModuleHandleW(L"LumaUtil.dll");
-        const auto request =
-            module ?
-                reinterpret_cast<LumaAPI::RequestInterface>(
-                    GetProcAddress(module, "LumaUtil_RequestAPI")) :
-                nullptr;
-        api = request ? request(LumaAPI::kVersion) : nullptr;
+        api = nullptr;
+
+        auto* mmsf = Heliosphan::GetMMSFAPI();
+        API::MMSF::IPluginService* service = nullptr;
         const char* failure = nullptr;
-        if (!module)
+
+        if (!mmsf)
         {
-            failure = "DLL-unavailable";
+            failure = "MMSF-unavailable";
         }
-        else if (!request)
+        else
         {
-            failure = "export-unavailable";
+            const auto features = mmsf->GetVersion();
+            if (API::MMSF::GetVersion(features) != 2)
+            {
+                failure = "MMSF-version-mismatch";
+            }
+            else if ((features & API::MMSF::MMSFAPIFeatures::kCoreService) ==
+                     API::MMSF::MMSFAPIFeatures{})
+            {
+                failure = "service-registry-unavailable";
+            }
+            else
+            {
+                service = mmsf->QueryService("LUMA");
+                if (!service)
+                {
+                    failure = "LUMA-service-unavailable";
+                }
+                else if (service->GetVersion() != API::Luma::kVersion)
+                {
+                    failure = "LUMA-version-mismatch";
+                }
+            }
         }
-        else if (!api)
-        {
-            failure = "API-request-rejected";
-        }
-        else if (api->version != LumaAPI::kVersion)
-        {
-            failure = "version-mismatch";
-        }
-        else if (!api->RegisterClient || !api->GetProviderSettings ||
-                 !api->UpdateProviderSettings)
-        {
-            failure = "required-function-unavailable";
-        }
+
         if (failure)
         {
             logger::error(
-                "[Luma Connection] method=export | phase={} | required={} | reported={} | registration=false | reason={}",
+                "[Luma Connection] method=MMSF | service=LUMA | phase={} | required={} | reported={} | registration=false | reason={}",
                 a_phase,
-                LumaAPI::kVersion,
-                api ? std::to_string(api->version) : "<unavailable>",
+                API::Luma::kVersion,
+                service ? std::to_string(service->GetVersion()) : "<unavailable>",
                 failure);
-            api = nullptr;
             return false;
         }
-        const bool registered = api->RegisterClient(std::addressof(callbacks));
+
+        auto* candidate =
+            static_cast<API::Luma::ILumaPluginService*>(service);
+        const bool registered =
+            candidate->RegisterClient(std::addressof(callbacks));
+
+        if (registered)
+        {
+            api = candidate;
+        }
         callbacksRegistered.store(registered, std::memory_order_relaxed);
+
         logger::info(
-            "[Luma Connection] method=export | phase={} | required={} | reported={} | registration={} | reason={}",
+            "[Luma Connection] method=MMSF | service=LUMA | phase={} | required={} | reported={} | registration={} | reason={}",
             a_phase,
-            LumaAPI::kVersion,
-            api->version,
+            API::Luma::kVersion,
+            service->GetVersion(),
             registered,
             registered ? "accepted" : "registration-rejected");
         return registered;
@@ -161,8 +177,7 @@ namespace MPL::LumaClient
         bool& a_detailedLogging)
     {
         const std::string id(a_id);
-        return api && api->GetProviderSettings &&
-               api->GetProviderSettings(
+        return api->GetProviderSettings(
                    id.c_str(),
                    std::addressof(a_detailedLogging),
                    nullptr);
@@ -173,8 +188,7 @@ namespace MPL::LumaClient
         const bool a_detailedLogging)
     {
         const std::string id(a_id);
-        return api && api->UpdateProviderSettings &&
-               api->UpdateProviderSettings(
+        return api->UpdateProviderSettings(
                    id.c_str(),
                    a_detailedLogging ?
                        std::int8_t{ 1 } :

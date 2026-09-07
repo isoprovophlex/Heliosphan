@@ -259,6 +259,7 @@ namespace MPL::Heliosphan
             std::optional<std::chrono::steady_clock::time_point> watchdogDeadline;
             std::string readinessLastIssue;
             std::uint64_t generation = 0;
+            MPL::API::MMSF::IEDIDCache* edidCache = nullptr;
             MPL::API::MMSF::Interface* mmsf = nullptr;
             SpeedTiming speedTiming;
         };
@@ -649,7 +650,7 @@ namespace MPL::Heliosphan
             {
                 return {};
             }
-            return state.mmsf->LookupEDIDForFormID(a_weather->formID);
+            return state.edidCache->LookupFormID(a_weather->formID);
         }
 
         RE::TESWeather* LookupWeather(std::string_view a_editorID)
@@ -659,11 +660,11 @@ namespace MPL::Heliosphan
             {
                 return nullptr;
             }
-            if (auto* cached = state.mmsf->LookupCachedForm(std::string(a_editorID)))
+            if (auto* cached = state.edidCache->LookupCachedForm(std::string(a_editorID)))
             {
                 return cached->As<RE::TESWeather>();
             }
-            const auto formID = state.mmsf->LookupFormIDForEDID(std::string(a_editorID));
+            const auto formID = state.edidCache->LookupEdid(std::string(a_editorID));
             return formID ? RE::TESForm::LookupByID<RE::TESWeather>(formID) : nullptr;
         }
 
@@ -774,7 +775,7 @@ namespace MPL::Heliosphan
         {
             auto* player = RE::PlayerCharacter::GetSingleton();
             const auto region = RegionRuntime::GetRegion(
-                GetState().mmsf,
+                GetState().edidCache,
                 player ? player->GetParentCell() : nullptr);
             return region.empty() ? "<none>" : region;
         }
@@ -2319,6 +2320,12 @@ namespace MPL::Heliosphan
         return GetState().mmsf;
     }
 
+
+    API::MMSF::IEDIDCache* EDIDCache()
+    {
+        return GetState().edidCache;
+    }
+
     RE::TESWeather* CaptureSourceWeather()
     {
         auto* sky = RE::Sky::GetSingleton();
@@ -2464,20 +2471,64 @@ namespace MPL::Heliosphan
         auto& state = GetState();
         ActivatePendingProfiles(state);
         state.mmsf = MPL::API::MMSF::RequestMMSFAPI();
-        if (state.mmsf)
+        state.edidCache = nullptr;
+        API::MMSF::IPluginService* edidService = nullptr;
+        const char* failure = nullptr;
+
+        if (!state.mmsf)
         {
-            const auto features = state.mmsf->GetVersion();
-            using API::MMSF::MMSFAPIFeatures;
-            logger::info(
-                "[MMSF Connection] method=legacy | phase=DataLoaded | version={} | caching={} | allocator={} | services=not-queried",
-                API::MMSF::GetVersion(features),
-                (features & MMSFAPIFeatures::kCaching) != MMSFAPIFeatures{},
-                (features & MMSFAPIFeatures::kAllocator) != MMSFAPIFeatures{});
+            failure = "MMSF-unavailable";
         }
         else
         {
-            logger::warn("[MMSF Connection] method=legacy | phase=DataLoaded | status=unavailable | services=not-queried");
+            const auto features = state.mmsf->GetVersion();
+            using API::MMSF::MMSFAPIFeatures;
+
+            logger::info(
+                "[MMSF Connection] method=services | phase=DataLoaded | version={} | caching={} | allocator={} | registry={}",
+                API::MMSF::GetVersion(features),
+                (features & MMSFAPIFeatures::kCaching) != MMSFAPIFeatures{},
+                (features & MMSFAPIFeatures::kAllocator) != MMSFAPIFeatures{},
+                (features & MMSFAPIFeatures::kCoreService) != MMSFAPIFeatures{});
+
+            if (API::MMSF::GetVersion(features) != 2)
+            {
+                failure = "MMSF-version-mismatch";
+            }
+            else if ((features & MMSFAPIFeatures::kCoreService) ==
+                     MMSFAPIFeatures{})
+            {
+                failure = "service-registry-unavailable";
+            }
+            else if ((features & MMSFAPIFeatures::kCaching) ==
+                     MMSFAPIFeatures{})
+            {
+                failure = "caching-unavailable";
+            }
+            else
+            {
+                edidService = state.mmsf->QueryService("EDID");
+                if (!edidService)
+                {
+                    failure = "EDID-service-unavailable";
+                }
+                else if (edidService->GetVersion() != 1)
+                {
+                    failure = "EDID-version-mismatch";
+                }
+                else
+                {
+                    state.edidCache =
+                        static_cast<API::MMSF::IEDIDCache*>(edidService);
+                }
+            }
         }
+
+        logger::info(
+            "[MMSF Service] service=EDID | required=1 | reported={} | accepted={} | reason={}",
+            edidService ? std::to_string(edidService->GetVersion()) : "<unavailable>",
+            state.edidCache != nullptr,
+            failure ? failure : "accepted");
         state.roomMarkerCleaningActive.assign(state.profiles.size(), false);
         state.roomMarkerAlwaysCleanCells.resize(state.profiles.size());
         PrepareWindowSyncProfilePriorities();
@@ -2564,7 +2615,7 @@ namespace MPL::Heliosphan
                     settings.id,
                     settings.weatherSync.weatherPrefix,
                     settings.weatherSync.regionPrefix,
-                    state.mmsf,
+                    state.edidCache,
                     settings.detailedLogging);
             }
         }
