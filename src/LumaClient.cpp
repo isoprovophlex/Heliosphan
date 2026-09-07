@@ -1,3 +1,4 @@
+#include <LumaAPI.h>
 #include <Heliosphan.h>
 #include <LumaClient.h>
 #include <ObjectOverrides.h>
@@ -9,8 +10,7 @@ namespace MPL::LumaClient
 {
     namespace
     {
-        HMODULE module = nullptr;
-        const LumaAPI::Interface* api = nullptr;
+        static MPL::API::Luma::ILumaPluginService* api = nullptr;
 
         void OnReferenceInitialized(RE::TESObjectREFR* a_reference)
         {
@@ -54,7 +54,7 @@ namespace MPL::LumaClient
                 a_hasSkylight);
         }
 
-        const LumaAPI::ClientCallbacks callbacks{
+        const MPL::API::Luma::ClientCallbacks callbacks{
             .id = "Heliosphan",
             .OnReferenceInitialized = OnReferenceInitialized,
             .OnCellChanging = OnCellChanging,
@@ -65,21 +65,7 @@ namespace MPL::LumaClient
 
     bool Load()
     {
-        module = GetModuleHandleW(L"LumaUtil.dll");
-        const auto request =
-            module ?
-                reinterpret_cast<LumaAPI::RequestInterface>(
-                    GetProcAddress(module, "LumaUtil_RequestAPI")) :
-                nullptr;
-        api = request ? request(LumaAPI::kVersion) : nullptr;
-        if (!api || api->version != LumaAPI::kVersion ||
-            !api->RegisterClient ||
-            !api->GetProviderSettings ||
-            !api->UpdateProviderSettings)
-        {
-            api = nullptr;
-            return false;
-        }
+        api = static_cast<MPL::API::Luma::ILumaPluginService*>(Heliosphan::GetMMSFAPI()->QueryService("LUMA"));
         return api->RegisterClient(std::addressof(callbacks));
     }
 
@@ -88,8 +74,7 @@ namespace MPL::LumaClient
         bool& a_detailedLogging)
     {
         const std::string id(a_id);
-        return api && api->GetProviderSettings &&
-               api->GetProviderSettings(
+        return api->GetProviderSettings(
                    id.c_str(),
                    std::addressof(a_detailedLogging),
                    nullptr);
@@ -100,8 +85,7 @@ namespace MPL::LumaClient
         const bool a_detailedLogging)
     {
         const std::string id(a_id);
-        return api && api->UpdateProviderSettings &&
-               api->UpdateProviderSettings(
+        return api->UpdateProviderSettings(
                    id.c_str(),
                    a_detailedLogging ?
                        std::int8_t{ 1 } :

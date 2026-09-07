@@ -52,7 +52,7 @@ namespace
                 {
                     logger::critical(
                         "[Heliosphan] startup failed | LumaAPI required={}",
-                        MPL::LumaAPI::kVersion);
+                        MPL::API::Luma::kVersion);
                     break;
                 }
                 MPL::LifecycleTiming::ResumeStartupAfterEngineWait();
