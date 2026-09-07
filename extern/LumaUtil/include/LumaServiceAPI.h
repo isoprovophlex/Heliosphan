@@ -34,4 +34,4 @@ namespace MPL::API::Luma
         virtual bool GetProviderSettings(const char*, bool*, bool*) = 0;
         virtual bool UpdateProviderSettings(const char*, std::int8_t, std::int8_t) = 0;
     };
-}  // namespace MPL::LumaAPI
+}  // namespace MPL::API::Luma

@@ -1,7 +1,8 @@
-#include <LumaAPI.h>
+#include <LumaServiceAPI.h>
 #include <Heliosphan.h>
 #include <LumaCallbackDiagnostics.h>
 #include <LumaClient.h>
+#include <MMSFServices.h>
 #include <ObjectOverrides.h>
 #include <RoomMarkerPatcher.h>
 #include <WindowSync.h>
@@ -88,48 +89,17 @@ namespace MPL::LumaClient
         };
     }  // namespace
 
-       bool Load(const std::string_view a_phase)
+    bool Load(const std::string_view a_phase, API::MMSF::Interface* a_registry)
     {
-        callbacksRegistered.store(false, std::memory_order_relaxed);
-        api = nullptr;
-
-        auto* mmsf = Heliosphan::GetMMSFAPI();
-        API::MMSF::IPluginService* service = nullptr;
-        const char* failure = nullptr;
-
-        if (!mmsf)
+        if (api)
         {
-            failure = "MMSF-unavailable";
-        }
-        else
-        {
-            const auto features = mmsf->GetVersion();
-            if (API::MMSF::GetVersion(features) != 2)
-            {
-                failure = "MMSF-version-mismatch";
-            }
-            else if ((features & API::MMSF::MMSFAPIFeatures::kCoreService) ==
-                     API::MMSF::MMSFAPIFeatures{})
-            {
-                failure = "service-registry-unavailable";
-            }
-            else
-            {
-                service = mmsf->QueryService("LUMA");
-                if (!service)
-                {
-                    failure = "LUMA-service-unavailable";
-                }
-                else if (service->GetVersion() != API::Luma::kVersion)
-                {
-                    failure = "LUMA-version-mismatch";
-                }
-            }
+            return true;
         }
 
+        const auto [service, failure] = MMSFServices::Query(a_registry, "LUMA", API::Luma::kVersion);
         if (failure)
         {
-            logger::error(
+            logger::info(
                 "[Luma Connection] method=MMSF | service=LUMA | phase={} | required={} | reported={} | registration=false | reason={}",
                 a_phase,
                 API::Luma::kVersion,
@@ -177,7 +147,7 @@ namespace MPL::LumaClient
         bool& a_detailedLogging)
     {
         const std::string id(a_id);
-        return api->GetProviderSettings(
+        return api && api->GetProviderSettings(
                    id.c_str(),
                    std::addressof(a_detailedLogging),
                    nullptr);
@@ -188,7 +158,7 @@ namespace MPL::LumaClient
         const bool a_detailedLogging)
     {
         const std::string id(a_id);
-        return api->UpdateProviderSettings(
+        return api && api->UpdateProviderSettings(
                    id.c_str(),
                    a_detailedLogging ?
                        std::int8_t{ 1 } :

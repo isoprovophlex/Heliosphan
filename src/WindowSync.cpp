@@ -58,11 +58,6 @@ namespace MPL::WindowSync
             return state;
         }
 
-        MPL::API::MMSF::Interface* MMSF()
-        {
-            return Heliosphan::GetMMSFAPI();
-        }
-
         MPL::API::MMSF::IEDIDCache* EDIDCache()
         {
             return Heliosphan::EDIDCache();

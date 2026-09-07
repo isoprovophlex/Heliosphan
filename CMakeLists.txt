@@ -148,6 +148,17 @@ if(HELIOSPHAN_BUILD_TESTS)
 
   add_test(NAME HeliosphanTests COMMAND HeliosphanTests)
 
+  add_executable(ServiceMigrationTests tests/ServiceMigrationTests.cpp)
+  target_compile_features(ServiceMigrationTests PRIVATE cxx_std_23)
+  target_include_directories(ServiceMigrationTests PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/extern/LumaUtil/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/extern/MMSF/include
+  )
+  target_link_libraries(ServiceMigrationTests PRIVATE CommonLibSSE::CommonLibSSE reflectcpp::reflectcpp)
+  target_precompile_headers(ServiceMigrationTests PRIVATE include/PCH.h)
+  add_test(NAME ServiceMigrationTests COMMAND ServiceMigrationTests)
+
   if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../TuningUtil/src/CSTonemapping.cpp")
     add_executable(TonemappingOwnershipTests tests/TonemappingOwnershipTests.cpp)
     target_compile_features(TonemappingOwnershipTests PRIVATE cxx_std_23)

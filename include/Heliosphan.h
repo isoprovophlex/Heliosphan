@@ -16,7 +16,6 @@ namespace RE
 
 namespace MPL::API::MMSF
 {
-    class Interface;
     class IEDIDCache;
 }
 
@@ -70,7 +69,6 @@ namespace MPL::Heliosphan
     std::size_t GetObjectOverrideRuleCount();
     bool IsSynchronizedRegion(std::string_view a_editorID);
     std::string BaseRegionEditorID(std::string_view a_editorID);
-    API::MMSF::Interface* GetMMSFAPI();
     API::MMSF::IEDIDCache* EDIDCache();
     RE::TESWeather* CaptureSourceWeather();
     void BeginCellTiming(RE::TESObjectCELL* a_cell);

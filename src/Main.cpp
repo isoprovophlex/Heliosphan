@@ -16,6 +16,43 @@
 namespace
 {
     bool lumaReady = false;
+    bool startupClosed = false;
+
+    void ConnectLuma(const std::string_view a_phase)
+    {
+        if (lumaReady || startupClosed)
+        {
+            return;
+        }
+        lumaReady = MPL::LumaClient::Load(a_phase, MPL::API::MMSF::RequestMMSFAPI());
+        if (!lumaReady)
+        {
+            return;
+        }
+        MPL::LifecycleTiming::ResumeStartupAfterEngineWait();
+        MPL::LifecycleTiming::BeginStartupPhase(
+            MPL::LifecycleTiming::StartupPhase::Configuration);
+        MPL::Heliosphan::LoadConfiguration();
+        MPL::LifecycleTiming::FinishStartupPhase(
+            MPL::LifecycleTiming::StartupPhase::Configuration);
+        MPL::LifecycleTiming::BeginStartupEngineWait();
+    }
+
+    void OnMMSFMessage(SKSE::MessagingInterface::Message* a_message)
+    {
+        if (!a_message || !a_message->sender ||
+            std::string_view(a_message->sender) != "MMSF" ||
+            a_message->type != MPL::API::MMSF::MMSFMessage::kMessage_MMSFServicesReg)
+        {
+            return;
+        }
+        if (!a_message->data || a_message->dataLen != sizeof(MPL::API::MMSF::MMSFMessage))
+        {
+            logger::warn("[MMSF Connection] registration message rejected | invalid payload");
+            return;
+        }
+        ConnectLuma("MMSFServicesReg");
+    }
 
     bool GetAutoCSTonemapping(const char* a_profile)
     {
@@ -45,30 +82,25 @@ namespace
         }
         switch (a_message->type)
         {
-        case SKSE::MessagingInterface::kPostLoad:
+        case SKSE::MessagingInterface::kPostPostLoad:
             {
-                lumaReady = MPL::LumaClient::Load("PostLoad");
-                if (!lumaReady)
+                // Subscribe after Luma's PostLoad listener, then cover either registration order.
+                if (!SKSE::GetMessagingInterface()->RegisterListener("MMSF", OnMMSFMessage))
                 {
-                    logger::critical(
-                        "[Heliosphan] startup failed | LumaAPI required={}",
-                        MPL::API::Luma::kVersion);
-                    break;
+                    logger::error("[MMSF Connection] registration listener unavailable");
                 }
-                MPL::LifecycleTiming::ResumeStartupAfterEngineWait();
-                MPL::LifecycleTiming::BeginStartupPhase(
-                    MPL::LifecycleTiming::StartupPhase::Configuration);
-                MPL::Heliosphan::LoadConfiguration();
-                MPL::LifecycleTiming::FinishStartupPhase(
-                    MPL::LifecycleTiming::StartupPhase::Configuration);
-                MPL::LifecycleTiming::BeginStartupEngineWait();
+                ConnectLuma("PostPostLoad");
                 break;
             }
         case SKSE::MessagingInterface::kDataLoaded:
             {
+                startupClosed = true;
                 MPL::LumaClient::LogCallbackSummary("DataLoaded-entry");
                 if (!lumaReady)
                 {
+                    logger::critical(
+                        "[Heliosphan] startup disabled | MMSF=2 | service=LUMA | required={} | not registered before record loading",
+                        MPL::API::Luma::kVersion);
                     break;
                 }
                 MPL::LifecycleTiming::ResumeStartupAfterEngineWait();
