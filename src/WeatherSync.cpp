@@ -2464,6 +2464,20 @@ namespace MPL::Heliosphan
         auto& state = GetState();
         ActivatePendingProfiles(state);
         state.mmsf = MPL::API::MMSF::RequestMMSFAPI();
+        if (state.mmsf)
+        {
+            const auto features = state.mmsf->GetVersion();
+            using API::MMSF::MMSFAPIFeatures;
+            logger::info(
+                "[MMSF Connection] method=legacy | phase=DataLoaded | version={} | caching={} | allocator={} | services=not-queried",
+                API::MMSF::GetVersion(features),
+                (features & MMSFAPIFeatures::kCaching) != MMSFAPIFeatures{},
+                (features & MMSFAPIFeatures::kAllocator) != MMSFAPIFeatures{});
+        }
+        else
+        {
+            logger::warn("[MMSF Connection] method=legacy | phase=DataLoaded | status=unavailable | services=not-queried");
+        }
         state.roomMarkerCleaningActive.assign(state.profiles.size(), false);
         state.roomMarkerAlwaysCleanCells.resize(state.profiles.size());
         PrepareWindowSyncProfilePriorities();

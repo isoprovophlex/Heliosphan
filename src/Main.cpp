@@ -47,7 +47,7 @@ namespace
         {
         case SKSE::MessagingInterface::kPostLoad:
             {
-                lumaReady = MPL::LumaClient::Load();
+                lumaReady = MPL::LumaClient::Load("PostLoad");
                 if (!lumaReady)
                 {
                     logger::critical(
@@ -66,6 +66,7 @@ namespace
             }
         case SKSE::MessagingInterface::kDataLoaded:
             {
+                MPL::LumaClient::LogCallbackSummary("DataLoaded-entry");
                 if (!lumaReady)
                 {
                     break;
@@ -218,6 +219,11 @@ SKSEPluginLoad(const SKSE::LoadInterface* a_skse)
     MPL::LifecycleTiming::BeginStartup();
     SKSE::Init(a_skse);
     logger::info("[Heliosphan] startup | game={}", a_skse->RuntimeVersion().string());
+    logger::info(
+        "[Heliosphan] API diagnostics=1 | version={} | build={} {} | callbackScope=received-only",
+        MPL::Plugin::NAME,
+        __DATE__,
+        __TIME__);
     SKSE::GetPapyrusInterface()->Register(MPL::Papyrus::Bind);
     SKSE::GetMessagingInterface()->RegisterListener(OnSKSEMessage);
 
