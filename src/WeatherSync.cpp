@@ -2471,7 +2471,64 @@ namespace MPL::Heliosphan
         auto& state = GetState();
         ActivatePendingProfiles(state);
         state.mmsf = MPL::API::MMSF::RequestMMSFAPI();
-        state.edidCache = state.mmsf ? static_cast<API::MMSF::IEDIDCache*>(state.mmsf->QueryService("EDID")) : nullptr;
+        state.edidCache = nullptr;
+        API::MMSF::IPluginService* edidService = nullptr;
+        const char* failure = nullptr;
+
+        if (!state.mmsf)
+        {
+            failure = "MMSF-unavailable";
+        }
+        else
+        {
+            const auto features = state.mmsf->GetVersion();
+            using API::MMSF::MMSFAPIFeatures;
+
+            logger::info(
+                "[MMSF Connection] method=services | phase=DataLoaded | version={} | caching={} | allocator={} | registry={}",
+                API::MMSF::GetVersion(features),
+                (features & MMSFAPIFeatures::kCaching) != MMSFAPIFeatures{},
+                (features & MMSFAPIFeatures::kAllocator) != MMSFAPIFeatures{},
+                (features & MMSFAPIFeatures::kCoreService) != MMSFAPIFeatures{});
+
+            if (API::MMSF::GetVersion(features) != 2)
+            {
+                failure = "MMSF-version-mismatch";
+            }
+            else if ((features & MMSFAPIFeatures::kCoreService) ==
+                     MMSFAPIFeatures{})
+            {
+                failure = "service-registry-unavailable";
+            }
+            else if ((features & MMSFAPIFeatures::kCaching) ==
+                     MMSFAPIFeatures{})
+            {
+                failure = "caching-unavailable";
+            }
+            else
+            {
+                edidService = state.mmsf->QueryService("EDID");
+                if (!edidService)
+                {
+                    failure = "EDID-service-unavailable";
+                }
+                else if (edidService->GetVersion() != 1)
+                {
+                    failure = "EDID-version-mismatch";
+                }
+                else
+                {
+                    state.edidCache =
+                        static_cast<API::MMSF::IEDIDCache*>(edidService);
+                }
+            }
+        }
+
+        logger::info(
+            "[MMSF Service] service=EDID | required=1 | reported={} | accepted={} | reason={}",
+            edidService ? std::to_string(edidService->GetVersion()) : "<unavailable>",
+            state.edidCache != nullptr,
+            failure ? failure : "accepted");
         state.roomMarkerCleaningActive.assign(state.profiles.size(), false);
         state.roomMarkerAlwaysCleanCells.resize(state.profiles.size());
         PrepareWindowSyncProfilePriorities();

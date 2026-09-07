@@ -1,5 +1,6 @@
 #include <Heliosphan.h>
 #include <LifecycleTiming.h>
+#include <LumaClient.h>
 
 #include <array>
 #include <chrono>
@@ -127,6 +128,7 @@ namespace MPL::LifecycleTiming
             return;
         }
         const auto now = Clock::now();
+        LumaClient::LogCallbackSummary("deferred-startup-complete");
         if (startup.engineWaitStarted)
         {
             startup.engineWait += now - *startup.engineWaitStarted;
