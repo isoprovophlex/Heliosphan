@@ -160,17 +160,31 @@ if(HELIOSPHAN_BUILD_TESTS)
   add_test(NAME ServiceMigrationTests COMMAND ServiceMigrationTests)
 
   if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../TuningUtil/src/CSTonemapping.cpp")
+    add_executable(HeliosphanInteropTests tests/HeliosphanInteropTests.cpp)
+    target_compile_features(HeliosphanInteropTests PRIVATE cxx_std_23)
+    target_include_directories(HeliosphanInteropTests PRIVATE
+      ${CMAKE_CURRENT_SOURCE_DIR}/tests/service-stubs
+      ${CMAKE_CURRENT_SOURCE_DIR}/include
+      ${CMAKE_CURRENT_SOURCE_DIR}/extern/MMSF/include
+      ${CMAKE_CURRENT_SOURCE_DIR}/../TuningUtil/include
+    )
+    target_link_libraries(HeliosphanInteropTests PRIVATE CommonLibSSE::CommonLibSSE reflectcpp::reflectcpp)
+    target_precompile_headers(HeliosphanInteropTests PRIVATE include/PCH.h)
+    add_test(NAME HeliosphanInteropTests COMMAND HeliosphanInteropTests)
+
     add_executable(TonemappingOwnershipTests tests/TonemappingOwnershipTests.cpp)
     target_compile_features(TonemappingOwnershipTests PRIVATE cxx_std_23)
     target_include_directories(
       TonemappingOwnershipTests
       PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/extern/MMSF/include
         ${CMAKE_CURRENT_SOURCE_DIR}/../TuningUtil/include
     )
+    target_link_libraries(TonemappingOwnershipTests PRIVATE reflectcpp::reflectcpp)
     add_test(NAME TonemappingShared COMMAND TonemappingOwnershipTests shared)
     add_test(NAME TonemappingStandalone COMMAND TonemappingOwnershipTests standalone)
-    add_test(NAME TonemappingLegacy COMMAND TonemappingOwnershipTests legacy)
+    add_test(NAME TonemappingUnsupportedService COMMAND TonemappingOwnershipTests unsupported)
   endif()
 
   set(

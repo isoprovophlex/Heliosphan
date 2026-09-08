@@ -2,7 +2,7 @@
 
 #include <PluginIndex.h>
 #include <RE/Skyrim.h>
-#include <HeliosphanAPI.h>
+#include <HeliosphanServiceAPI.h>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -58,6 +58,6 @@ namespace MPL::LightPlacer
     // partitioned by cell, reloaded, and restored on disk before gameplay begins.
     void QueueStartupPatch(std::vector<PatchRule> a_rules);
     bool RegisterTransformer(
-        const HeliosphanAPI::LightPlacerTransformer* a_transformer);
+        const API::Heliosphan::LightPlacerTransformer* a_transformer);
     bool RequestReload();
 }  // namespace MPL::LightPlacer

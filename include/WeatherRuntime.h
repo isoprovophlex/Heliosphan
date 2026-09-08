@@ -2,7 +2,7 @@
 
 #include <ExternalEmittance.h>
 #include <Heliosphan.h>
-#include <HeliosphanAPI.h>
+#include <HeliosphanServiceAPI.h>
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
@@ -19,11 +19,11 @@ namespace MPL::WeatherRuntime
         };
     }
 
-    inline HeliosphanAPI::SetWeatherResult SetWeatherInstant(
+    inline API::Heliosphan::SetWeatherResult SetWeatherInstant(
         RE::TESWeather* a_weather,
         const bool a_override)
     {
-        HeliosphanAPI::SetWeatherResult result{};
+        API::Heliosphan::SetWeatherResult result{};
         if (!a_weather)
         {
             return result;
@@ -32,14 +32,14 @@ namespace MPL::WeatherRuntime
         if (!sky)
         {
             result.status =
-                HeliosphanAPI::SetWeatherStatus::kSkyUnavailable;
+                API::Heliosphan::SetWeatherStatus::kSkyUnavailable;
             return result;
         }
         const auto operationStart = std::chrono::steady_clock::now();
         const auto forceStart = std::chrono::steady_clock::now();
         sky->ForceWeather(a_weather, a_override);
-        result.flags |= HeliosphanAPI::ToMask(
-            HeliosphanAPI::SetWeatherFlag::kWeatherApplied);
+        result.flags |= API::Heliosphan::ToMask(
+            API::Heliosphan::SetWeatherFlag::kWeatherApplied);
         const auto forceDuration =
             std::chrono::duration_cast<std::chrono::microseconds>(
                 std::chrono::steady_clock::now() - forceStart);
@@ -48,14 +48,14 @@ namespace MPL::WeatherRuntime
         auto* cell = player ? player->GetParentCell() : nullptr;
         if (!cell)
         {
-            result.status = HeliosphanAPI::SetWeatherStatus::
+            result.status = API::Heliosphan::SetWeatherStatus::
                 kAppliedWithoutPlayerCell;
             return result;
         }
         auto* loadedData = cell->GetRuntimeData().loadedData;
         if (!loadedData)
         {
-            result.status = HeliosphanAPI::SetWeatherStatus::
+            result.status = API::Heliosphan::SetWeatherStatus::
                 kAppliedWithoutLoadedData;
             if (Heliosphan::IsDetailedLoggingEnabled())
             {
@@ -97,15 +97,15 @@ namespace MPL::WeatherRuntime
         const auto lightEntries =
             loadedData->emittanceLightRefMap.size();
         const auto refreshStart = std::chrono::steady_clock::now();
-        result.flags |= HeliosphanAPI::ToMask(
-            HeliosphanAPI::SetWeatherFlag::kEmittanceRefreshAttempted);
+        result.flags |= API::Heliosphan::ToMask(
+            API::Heliosphan::SetWeatherFlag::kEmittanceRefreshAttempted);
         detail::updateCellEmittance(cell);
-        result.flags |= HeliosphanAPI::ToMask(
-            HeliosphanAPI::SetWeatherFlag::kEmittanceRefreshCompleted);
+        result.flags |= API::Heliosphan::ToMask(
+            API::Heliosphan::SetWeatherFlag::kEmittanceRefreshCompleted);
         const auto clientReferences =
             ExternalEmittance::NotifyCellEmittanceRefreshed(cell);
         result.status =
-            HeliosphanAPI::SetWeatherStatus::kAppliedAndRefreshed;
+            API::Heliosphan::SetWeatherStatus::kAppliedAndRefreshed;
         result.lightCount = static_cast<std::uint32_t>(
             std::min<std::size_t>(
                 lightEntries,

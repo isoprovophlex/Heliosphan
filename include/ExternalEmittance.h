@@ -1,7 +1,7 @@
 #pragma once
 
 #include <PluginIndex.h>
-#include <HeliosphanAPI.h>
+#include <HeliosphanServiceAPI.h>
 #include <cstddef>
 #include <string>
 #include <vector>
@@ -38,5 +38,5 @@ namespace MPL::ExternalEmittance
     void ReplayCell(RE::TESObjectCELL* a_cell);
     std::size_t NotifyCellEmittanceRefreshed(RE::TESObjectCELL* a_cell);
     bool RegisterReferenceClient(
-        const HeliosphanAPI::ReferenceCallbacks* a_callbacks);
+        const API::Heliosphan::ReferenceCallbacks* a_callbacks);
 }  // namespace MPL::ExternalEmittance

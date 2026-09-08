@@ -1,7 +1,7 @@
 #include <AutoCSTonemapping.h>
 #include <ExternalEmittance.h>
 #include <Heliosphan.h>
-#include <HeliosphanAPI.h>
+#include <HeliosphanService.h>
 #include <LifecycleTiming.h>
 #include <LightPlacer.h>
 #include <LumaClient.h>
@@ -10,7 +10,6 @@
 #include <Plugin.h>
 #include <REL/Version.h>
 #include <SKSE/API.h>
-#include <WeatherRuntime.h>
 #include <WindowSync.h>
 
 namespace
@@ -24,7 +23,8 @@ namespace
         {
             return;
         }
-        lumaReady = MPL::LumaClient::Load(a_phase, MPL::API::MMSF::RequestMMSFAPI());
+        auto* registry = MPL::API::MMSF::RequestMMSFAPI();
+        lumaReady = MPL::LumaClient::Load(a_phase, registry);
         if (!lumaReady)
         {
             return;
@@ -33,6 +33,7 @@ namespace
         MPL::LifecycleTiming::BeginStartupPhase(
             MPL::LifecycleTiming::StartupPhase::Configuration);
         MPL::Heliosphan::LoadConfiguration();
+        MPL::HeliosphanService::Register(registry);
         MPL::LifecycleTiming::FinishStartupPhase(
             MPL::LifecycleTiming::StartupPhase::Configuration);
         MPL::LifecycleTiming::BeginStartupEngineWait();
@@ -52,26 +53,6 @@ namespace
             return;
         }
         ConnectLuma("MMSFServicesReg");
-    }
-
-    bool GetAutoCSTonemapping(const char* a_profile)
-    {
-        return a_profile && MPL::AutoCSTonemapping::GetProfileEnabled(a_profile);
-    }
-
-    bool SetAutoCSTonemapping(const char* a_profile, const bool a_enabled)
-    {
-        return a_profile && MPL::AutoCSTonemapping::SetProfileEnabled(a_profile, a_enabled);
-    }
-
-    bool IsAutoCSTonemappingApplied(const char* a_profile)
-    {
-        return a_profile && MPL::AutoCSTonemapping::IsProfileApplied(a_profile);
-    }
-
-    bool SetAutoCSTonemappingSuppressed(const char* a_profile, const bool a_suppressed)
-    {
-        return a_profile && MPL::AutoCSTonemapping::SetProfileSuppressed(a_profile, a_suppressed);
     }
 
     void OnSKSEMessage(SKSE::MessagingInterface::Message* a_message)
@@ -183,68 +164,7 @@ namespace
         MPL::Heliosphan::Reset();
     }
 
-    const MPL::HeliosphanAPI::Interface api{
-        .version = MPL::HeliosphanAPI::kVersion,
-        .SetWeatherInstant = MPL::WeatherRuntime::SetWeatherInstant,
-        .RegisterLightPlacerTransformer =
-            MPL::LightPlacer::RegisterTransformer,
-        .RequestLightPlacerReload = MPL::LightPlacer::RequestReload,
-        .RegisterReferenceClient =
-            MPL::ExternalEmittance::RegisterReferenceClient,
-        .GetAutoCSTonemapping = GetAutoCSTonemapping,
-        .SetAutoCSTonemapping = SetAutoCSTonemapping,
-        .IsAutoCSTonemappingApplied = IsAutoCSTonemappingApplied,
-        .SetAutoCSTonemappingSuppressed = SetAutoCSTonemappingSuppressed,
-        .SetCSTonemappingForcedTargets = MPL::AutoCSTonemapping::SetForcedTargets,
-    };
-    const MPL::HeliosphanAPI::Interface legacyV6Api = []
-    {
-        auto result = api;
-        result.version = MPL::HeliosphanAPI::kLegacyVersion;
-        result.SetCSTonemappingForcedTargets = nullptr;
-        return result;
-    }();
-    const MPL::HeliosphanAPI::Interface legacyV5Api{
-        .version = 5,
-        .SetWeatherInstant = MPL::WeatherRuntime::SetWeatherInstant,
-        .RegisterLightPlacerTransformer =
-            MPL::LightPlacer::RegisterTransformer,
-        .RequestLightPlacerReload = MPL::LightPlacer::RequestReload,
-        .RegisterReferenceClient =
-            MPL::ExternalEmittance::RegisterReferenceClient,
-        .GetAutoCSTonemapping = GetAutoCSTonemapping,
-        .SetAutoCSTonemapping = SetAutoCSTonemapping,
-    };
-    const MPL::HeliosphanAPI::Interface legacyV4Api{
-        .version = 4,
-        .SetWeatherInstant = MPL::WeatherRuntime::SetWeatherInstant,
-        .RegisterLightPlacerTransformer =
-            MPL::LightPlacer::RegisterTransformer,
-        .RequestLightPlacerReload = MPL::LightPlacer::RequestReload,
-        .RegisterReferenceClient =
-            MPL::ExternalEmittance::RegisterReferenceClient,
-    };
 }  // namespace
-
-extern "C" __declspec(dllexport)
-const MPL::HeliosphanAPI::Interface*
-Heliosphan_RequestAPI(
-    const std::uint32_t a_version)
-{
-    if (a_version == MPL::HeliosphanAPI::kVersion)
-    {
-        return std::addressof(api);
-    }
-    if (a_version == legacyV5Api.version)
-    {
-        return std::addressof(legacyV5Api);
-    }
-    if (a_version == legacyV6Api.version)
-    {
-        return std::addressof(legacyV6Api);
-    }
-    return a_version == legacyV4Api.version ? std::addressof(legacyV4Api) : nullptr;
-}
 
 SKSEPluginLoad(const SKSE::LoadInterface* a_skse)
 {

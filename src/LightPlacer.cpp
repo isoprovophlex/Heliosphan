@@ -37,7 +37,7 @@ namespace MPL::LightPlacer
         struct RegisteredTransformer
         {
             std::string id;
-            HeliosphanAPI::LightPlacerTransform transform = nullptr;
+            API::Heliosphan::LightPlacerTransform transform = nullptr;
             void (*onReloadComplete)(bool) = nullptr;
         };
 
@@ -1604,7 +1604,7 @@ namespace MPL::LightPlacer
     }
 
     bool RegisterTransformer(
-        const HeliosphanAPI::LightPlacerTransformer* a_transformer)
+        const API::Heliosphan::LightPlacerTransformer* a_transformer)
     {
         if (!a_transformer)
         {

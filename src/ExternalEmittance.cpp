@@ -840,7 +840,7 @@ namespace MPL::ExternalEmittance
     }
 
     bool RegisterReferenceClient(
-        const HeliosphanAPI::ReferenceCallbacks* a_callbacks)
+        const API::Heliosphan::ReferenceCallbacks* a_callbacks)
     {
         if (!a_callbacks || !a_callbacks->id || !*a_callbacks->id ||
             !a_callbacks->OnReferenceEmittanceChanged)

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <MMSF_API.h>
 #include <cstddef>
 #include <cstdint>
 
@@ -10,10 +11,10 @@ namespace RE
     class TESWeather;
 }
 
-namespace MPL::HeliosphanAPI
+namespace MPL::API::Heliosphan
 {
-    inline constexpr std::uint32_t kVersion = 7;
-    inline constexpr std::uint32_t kLegacyVersion = 6;
+    inline constexpr std::uint8_t kVersion = 1;
+    inline constexpr auto kServiceName = "HELIOSPHAN";
 
     struct ReferenceCallbacks
     {
@@ -71,23 +72,19 @@ namespace MPL::HeliosphanAPI
         std::uint32_t lightCount = 0;
     };
 
-    struct Interface
+    class IHeliosphanService : public MMSF::IPluginService
     {
-        std::uint32_t version = kVersion;
-        SetWeatherResult (*SetWeatherInstant)(
-            RE::TESWeather*,
-            bool) = nullptr;
-        bool (*RegisterLightPlacerTransformer)(
-            const LightPlacerTransformer*) = nullptr;
-        bool (*RequestLightPlacerReload)() = nullptr;
-        bool (*RegisterReferenceClient)(
-            const ReferenceCallbacks*) = nullptr;
-        bool (*GetAutoCSTonemapping)(const char*) = nullptr;
-        bool (*SetAutoCSTonemapping)(const char*, bool) = nullptr;
-        bool (*IsAutoCSTonemappingApplied)(const char*) = nullptr;
-        bool (*SetAutoCSTonemappingSuppressed)(const char*, bool) = nullptr;
+    public:
+        virtual SetWeatherResult SetWeatherInstant(RE::TESWeather*, bool) = 0;
+        virtual bool RegisterLightPlacerTransformer(const LightPlacerTransformer*) = 0;
+        virtual bool RequestLightPlacerReload() = 0;
+        virtual bool RegisterReferenceClient(const ReferenceCallbacks*) = 0;
+        virtual bool GetAutoCSTonemapping(const char*) = 0;
+        virtual bool SetAutoCSTonemapping(const char*, bool) = 0;
+        virtual bool IsAutoCSTonemappingApplied(const char*) = 0;
+        virtual bool SetAutoCSTonemappingSuppressed(const char*, bool) = 0;
         // The target array is copied; automatic and forced ownership are combined.
-        bool (*SetCSTonemappingForcedTargets)(RE::TESImageSpace* const*, std::size_t) = nullptr;
+        virtual bool SetCSTonemappingForcedTargets(RE::TESImageSpace* const*, std::size_t) = 0;
     };
 
     constexpr bool HasFlag(
@@ -96,6 +93,4 @@ namespace MPL::HeliosphanAPI
     {
         return (a_result.flags & ToMask(a_flag)) != 0;
     }
-
-    using RequestInterface = const Interface* (*) (std::uint32_t);
-}  // namespace MPL::HeliosphanAPI
+}  // namespace MPL::API::Heliosphan
