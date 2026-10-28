@@ -117,6 +117,6 @@ Event OnOptionHighlight(int Option)
     ElseIf Option == OID_WeatherSyncDetailedLogging
         SetInfoText("Saves detailed diagnostic logging to Heliosphan.log.")
     ElseIf Option == OID_WeatherSyncSpeedLogging
-        SetInfoText("Saves startup, game-load, and cell timing to the Luma Suite logs. Restart to capture startup timing.")
+        SetInfoText("Saves Helios startup, game-load, and cell timing to Heliosphan.log. Restart to capture startup timing.")
     EndIf
 EndEvent

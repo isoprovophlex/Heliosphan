@@ -12,6 +12,14 @@ namespace MPL::WeatherRuntime
 {
     namespace detail
     {
+        inline void TraceStage(const char* a_stage, const RE::TESWeather* a_weather, const bool a_override)
+        {
+            if (!Heliosphan::IsDetailedLoggingEnabled()) return;
+            logger::info("[Weather Runtime] stage={} | target={:08X} | override={}",
+                a_stage, a_weather ? a_weather->GetFormID() : 0, a_override);
+            spdlog::default_logger()->flush();
+        }
+
         using UpdateCellEmittance = void (*)(RE::TESObjectCELL*);
 
         inline REL::Relocation<UpdateCellEmittance> updateCellEmittance{
@@ -37,7 +45,9 @@ namespace MPL::WeatherRuntime
         }
         const auto operationStart = std::chrono::steady_clock::now();
         const auto forceStart = std::chrono::steady_clock::now();
+        detail::TraceStage("ForceWeather-begin", a_weather, a_override);
         sky->ForceWeather(a_weather, a_override);
+        detail::TraceStage("ForceWeather-end", a_weather, a_override);
         result.flags |= API::Heliosphan::ToMask(
             API::Heliosphan::SetWeatherFlag::kWeatherApplied);
         const auto forceDuration =
@@ -70,6 +80,7 @@ namespace MPL::WeatherRuntime
         }
 
         const auto regionStart = std::chrono::steady_clock::now();
+        detail::TraceStage("region-cache-begin", a_weather, a_override);
         std::uint32_t regionSources = 0;
         std::uint32_t regionFallbacks = 0;
         for (const auto& entry : loadedData->emittanceSourceRefMap)
@@ -91,6 +102,7 @@ namespace MPL::WeatherRuntime
         const auto regionDuration =
             std::chrono::duration_cast<std::chrono::microseconds>(
                 std::chrono::steady_clock::now() - regionStart);
+        detail::TraceStage("region-cache-end", a_weather, a_override);
 
         const auto sourceEntries =
             loadedData->emittanceSourceRefMap.size();
@@ -99,11 +111,15 @@ namespace MPL::WeatherRuntime
         const auto refreshStart = std::chrono::steady_clock::now();
         result.flags |= API::Heliosphan::ToMask(
             API::Heliosphan::SetWeatherFlag::kEmittanceRefreshAttempted);
+        detail::TraceStage("cell-emittance-begin", a_weather, a_override);
         detail::updateCellEmittance(cell);
+        detail::TraceStage("cell-emittance-end", a_weather, a_override);
         result.flags |= API::Heliosphan::ToMask(
             API::Heliosphan::SetWeatherFlag::kEmittanceRefreshCompleted);
+        detail::TraceStage("client-notification-begin", a_weather, a_override);
         const auto clientReferences =
             ExternalEmittance::NotifyCellEmittanceRefreshed(cell);
+        detail::TraceStage("client-notification-end", a_weather, a_override);
         result.status =
             API::Heliosphan::SetWeatherStatus::kAppliedAndRefreshed;
         result.lightCount = static_cast<std::uint32_t>(

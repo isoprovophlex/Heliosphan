@@ -1,7 +1,6 @@
 #pragma once
 
 #include <Heliosphan.h>
-#include <WeatherRuntime.h>
 
 namespace MPL::Papyrus
 {
@@ -14,29 +13,6 @@ namespace MPL::Papyrus
             logger::error("[Heliosphan] [Notification] {}", a_message);
         }
         return a_succeeded;
-    }
-
-    inline void SetWeatherInstant(
-        RE::StaticFunctionTag*,
-        RE::TESWeather* a_weather,
-        const bool a_override)
-    {
-        if (!a_weather)
-        {
-            return;
-        }
-        const auto result =
-            WeatherRuntime::SetWeatherInstant(a_weather, a_override);
-        if (Heliosphan::IsDetailedLoggingEnabled())
-        {
-            logger::info(
-                "[Weather Sync] SetWeatherInstant: weather {:08X} "
-                "override={} status={} nativeCellLightEntriesProcessed={}",
-                a_weather->GetFormID(),
-                a_override,
-                static_cast<std::uint32_t>(result.status),
-                result.lightCount);
-        }
     }
 
     inline bool GetWeatherSyncDetailedLogging(
@@ -116,10 +92,6 @@ namespace MPL::Papyrus
 
     inline bool Bind(RE::BSScript::IVirtualMachine* a_vm)
     {
-        a_vm->RegisterFunction(
-            "SetWeatherInstant",
-            "Heliosphan",
-            SetWeatherInstant);
         a_vm->RegisterFunction(
             "GetWeatherSyncDetailedLogging",
             "Heliosphan",

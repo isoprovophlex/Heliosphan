@@ -1,8 +1,10 @@
 #include <LumaServiceAPI.h>
 #include <Heliosphan.h>
+#include <ImageSpaceDiagnostics.h>
 #include <LumaCallbackDiagnostics.h>
 #include <LumaClient.h>
 #include <MMSFServices.h>
+#include <MMSFProviderSettings.h>
 #include <ObjectOverrides.h>
 #include <RoomMarkerPatcher.h>
 #include <WindowSync.h>
@@ -13,6 +15,7 @@ namespace MPL::LumaClient
     namespace
     {
         MPL::API::Luma::ILumaPluginService* api = nullptr;
+        API::MMSF::Interface* registry = nullptr;
         Diagnostics::CallbackCounters callbackCounters;
         std::atomic_bool callbacksRegistered{ false };
 
@@ -29,6 +32,7 @@ namespace MPL::LumaClient
                     a_callback,
                     a_cell ? a_cell->GetFormID() : 0,
                     GetCurrentThreadId());
+                spdlog::default_logger()->flush();
             }
         }
 
@@ -55,6 +59,7 @@ namespace MPL::LumaClient
                 a_destination,
                 sourceWeather,
                 sourceRegion);
+            TraceCellCallback("OnCellChanging-return", a_destination, sequence);
         }
 
         void OnCellChanged(const RE::TESObjectCELL* a_destination)
@@ -65,6 +70,9 @@ namespace MPL::LumaClient
                 const_cast<RE::TESObjectCELL*>(a_destination);
             WindowSync::FinishCellChange(a_destination);
             Heliosphan::FinishCellTiming(destination);
+            TraceCellCallback("OnCellChanged-return", a_destination, sequence);
+            ImageSpaceDiagnostics::QueueSnapshot("cell-changed", a_destination ? a_destination->GetFormID() : 0,
+                Heliosphan::IsDetailedLoggingEnabled);
         }
 
         void OnCellPatched(
@@ -115,6 +123,7 @@ namespace MPL::LumaClient
 
         if (registered)
         {
+            registry = a_registry;
             api = candidate;
         }
         callbacksRegistered.store(registered, std::memory_order_relaxed);
@@ -147,10 +156,7 @@ namespace MPL::LumaClient
         bool& a_detailedLogging)
     {
         const std::string id(a_id);
-        return api && api->GetProviderSettings(
-                   id.c_str(),
-                   std::addressof(a_detailedLogging),
-                   nullptr);
+        return MMSFProviderSettings::ReadDetailedLogging(registry, id.c_str(), a_detailedLogging);
     }
 
     bool UpdateProviderDetailedLogging(
@@ -158,12 +164,7 @@ namespace MPL::LumaClient
         const bool a_detailedLogging)
     {
         const std::string id(a_id);
-        return api && api->UpdateProviderSettings(
-                   id.c_str(),
-                   a_detailedLogging ?
-                       std::int8_t{ 1 } :
-                       std::int8_t{ 0 },
-                   std::int8_t{ -1 });
+        return MMSFProviderSettings::WriteDetailedLogging(registry, id.c_str(), a_detailedLogging);
     }
 
 }  // namespace MPL::LumaClient

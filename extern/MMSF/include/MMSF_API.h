@@ -50,6 +50,13 @@ namespace MPL::API::MMSF
         virtual void CacheForm(std::string, RE::FormID) = 0;
     };
 
+    class ICompatService : public IPluginService
+    {
+    public:
+        virtual bool GetProviderSettings(const char*, bool*, bool*) = 0;
+        virtual bool UpdateProviderSettings(const char*, const std::int8_t, const std::int8_t) = 0;
+    };
+
     class Interface
     {
     public:

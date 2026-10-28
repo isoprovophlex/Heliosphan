@@ -16,6 +16,23 @@ namespace MPL::API::Heliosphan
     inline constexpr std::uint8_t kVersion = 1;
     inline constexpr auto kServiceName = "HELIOSPHAN";
 
+    inline constexpr std::uint32_t kLoggingAPIVersion = 1;
+    inline constexpr auto kLoggingAPIExport = "Heliosphan_GetLoggingAPI";
+
+    enum class LogLevel : std::uint8_t
+    {
+        trace,
+        debug,
+        info,
+        warning,
+        error,
+        critical,
+    };
+
+    // Message data is borrowed only for the duration of this synchronous call.
+    using LogMessage = bool (*)(LogLevel, const char*, std::size_t) noexcept;
+    using GetLoggingAPI = LogMessage (*)(std::uint32_t) noexcept;
+
     struct ReferenceCallbacks
     {
         // The ID is copied during registration.

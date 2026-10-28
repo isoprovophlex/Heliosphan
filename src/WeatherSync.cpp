@@ -11,6 +11,7 @@
 #include <RegionRuntime.h>
 #include <RegionWeatherPatcher.h>
 #include <WeatherRuntime.h>
+#include <ImageSpaceDiagnostics.h>
 #include <Heliosphan.h>
 #include <HeliosphanLogic.h>
 #include <InlineTaskQueue.h>
@@ -55,6 +56,7 @@ namespace MPL::Heliosphan
         constexpr auto kSkyUpdateWatchdogDelay = 2s;
         constexpr auto kExpirationPoll = 15s;
         constexpr auto kCurrentWeatherNotificationDelay = 2s;
+        constexpr auto kVisualDiagnosticDelay = 2s;
         constexpr auto kNotificationDurationAdjustmentDelay = 100ms;
         constexpr float kWeatherTransitionSelectionThreshold = 0.5f;
 
@@ -1104,6 +1106,22 @@ namespace MPL::Heliosphan
 
             const auto result =
                 WeatherRuntime::SetWeatherInstant(target, entering);
+            ImageSpaceDiagnostics::QueueSnapshot("weather-transition-return",
+                destinationCell ? destinationCell->GetFormID() : 0, IsDetailedLoggingEnabled);
+            if (DetailedLogsEnabled())
+            {
+                const auto cellID = destinationCell ? destinationCell->GetFormID() : 0;
+                GetScheduler().Schedule(kVisualDiagnosticDelay, [a_generation, cellID]
+                {
+                    if (!DetailedLogsEnabled()) return;
+                    if (a_generation != GetState().generation)
+                    {
+                        LogDetailed("visual-snapshot=skipped | generation={} | reason=superseded", a_generation);
+                        return;
+                    }
+                    ImageSpaceDiagnostics::Snapshot("weather-transition-delayed", cellID);
+                });
+            }
             if (DetailedLogsEnabled())
             {
                 LogDetailed(

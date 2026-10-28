@@ -2,6 +2,7 @@
 #include <ExternalEmittance.h>
 #include <Heliosphan.h>
 #include <HeliosphanService.h>
+#include <HeliosphanServiceAPI.h>
 #include <LifecycleTiming.h>
 #include <LightPlacer.h>
 #include <LumaClient.h>
@@ -11,11 +12,42 @@
 #include <REL/Version.h>
 #include <SKSE/API.h>
 #include <WindowSync.h>
+#include <array>
+#include <atomic>
+#include <utility>
 
 namespace
 {
+    std::atomic_bool loggingReady{ false };
     bool lumaReady = false;
     bool startupClosed = false;
+
+    bool WriteClientLog(
+        const MPL::API::Heliosphan::LogLevel a_level,
+        const char* a_message,
+        const std::size_t a_length) noexcept
+    {
+        constexpr std::array levels{
+            spdlog::level::trace, spdlog::level::debug, spdlog::level::info,
+            spdlog::level::warn, spdlog::level::err, spdlog::level::critical
+        };
+        const auto index = std::to_underlying(a_level);
+        if (!loggingReady.load(std::memory_order_acquire) || !a_message || index >= levels.size())
+        {
+            return false;
+        }
+        try
+        {
+            const auto log = spdlog::default_logger();
+            if (!log) return false;
+            log->log(levels[index], spdlog::string_view_t(a_message, a_length));
+            return true;
+        }
+        catch (...)
+        {
+            return false;
+        }
+    }
 
     void ConnectLuma(const std::string_view a_phase)
     {
@@ -170,6 +202,7 @@ SKSEPluginLoad(const SKSE::LoadInterface* a_skse)
 {
     MPL::LifecycleTiming::BeginStartup();
     SKSE::Init(a_skse);
+    loggingReady.store(true, std::memory_order_release);
     logger::info("[Heliosphan] startup | game={}", a_skse->RuntimeVersion().string());
     logger::info(
         "[Heliosphan] API diagnostics=1 | version={} | build={} {} | callbackScope=received-only",
@@ -185,6 +218,14 @@ SKSEPluginLoad(const SKSE::LoadInterface* a_skse)
     serialization->SetLoadCallback(Deserialize);
     serialization->SetRevertCallback(Revert);
     return true;
+}
+
+SKSE_EXPORT MPL::API::Heliosphan::LogMessage Heliosphan_GetLoggingAPI(
+    const std::uint32_t a_version) noexcept
+{
+    return a_version == MPL::API::Heliosphan::kLoggingAPIVersion &&
+                   loggingReady.load(std::memory_order_acquire) ?
+               WriteClientLog : nullptr;
 }
 
 SKSEPluginInfo(
