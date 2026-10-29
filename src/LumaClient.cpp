@@ -5,6 +5,7 @@
 #include <LumaClient.h>
 #include <MMSFServices.h>
 #include <MMSFProviderSettings.h>
+#include <ModelPatcher.h>
 #include <ObjectOverrides.h>
 #include <RoomMarkerPatcher.h>
 #include <WindowSync.h>
@@ -42,6 +43,7 @@ namespace MPL::LumaClient
             RoomMarkerPatcher::ProcessReference(a_reference);
             WindowSync::ProcessReference(a_reference);
             ObjectOverrides::Patches::ApplyTransformsToReference(a_reference);
+            ModelPatcher::QueueReference(a_reference);
         }
 
         void OnCellChanging(RE::TESObjectCELL* a_destination)

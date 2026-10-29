@@ -6,6 +6,7 @@
 #include <LifecycleTiming.h>
 #include <LightPlacer.h>
 #include <LumaClient.h>
+#include <ModelPatcher.h>
 #include <ObjectOverrides.h>
 #include <Papyrus.h>
 #include <Plugin.h>
@@ -66,6 +67,7 @@ namespace
             MPL::LifecycleTiming::StartupPhase::Configuration);
         MPL::Heliosphan::LoadConfiguration();
         MPL::HeliosphanService::Register(registry);
+        MPL::ModelPatcher::RegisterService(registry);
         MPL::LifecycleTiming::FinishStartupPhase(
             MPL::LifecycleTiming::StartupPhase::Configuration);
         MPL::LifecycleTiming::BeginStartupEngineWait();
@@ -124,6 +126,7 @@ namespace
                 MPL::LifecycleTiming::FinishStartupPhase(
                     MPL::LifecycleTiming::StartupPhase::LightPlacer);
                 MPL::WindowSync::Initialize();
+                MPL::ModelPatcher::Initialize();
                 MPL::ExternalEmittance::ScheduleFinalReferenceInitialization();
                 if (auto* tasks = SKSE::GetTaskInterface())
                 {
@@ -143,6 +146,7 @@ namespace
         case SKSE::MessagingInterface::kPreLoadGame:
             {
                 MPL::LifecycleTiming::BeginGameLoad();
+                MPL::ModelPatcher::Reset();
                 MPL::ObjectOverrides::Patches::BeginGameLoad();
                 MPL::ExternalEmittance::BeginGameLoad();
                 MPL::WindowSync::Reset();
@@ -190,6 +194,7 @@ namespace
 
     void Revert(SKSE::SerializationInterface*)
     {
+        MPL::ModelPatcher::Reset();
         MPL::ObjectOverrides::Patches::BeginGameLoad();
         MPL::ExternalEmittance::BeginGameLoad();
         MPL::WindowSync::Reset();

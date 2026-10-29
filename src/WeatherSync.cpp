@@ -7,6 +7,7 @@
 #include <LifecycleTiming.h>
 #include <MMSF_API.h>
 #include <MMSFServices.h>
+#include <ModelPatcher.h>
 #include <ObjectOverrides.h>
 #include <RegionRuntime.h>
 #include <RegionWeatherPatcher.h>
@@ -111,6 +112,7 @@ namespace MPL::Heliosphan
             WeatherSyncSettings weatherSync;
             WindowSyncSettings windowSync;
             RegionWeatherPatcher::Settings regionWeatherPatcher;
+            std::vector<ModelPatcher::Rule> modelPatches;
             std::vector<ObjectOverrides::Patches::Group> objects;
             rfl::Skip<std::map<std::string, std::string>>
                 compiledGlobalOverrides;
@@ -1786,6 +1788,7 @@ namespace MPL::Heliosphan
             AutoCSTonemapping::AddProfile(
                 settings.id,
                 settings.autoCSTonemapping);
+            ModelPatcher::AddProfile(settings.id, settings.modelPatches);
             LightPlacer::Settings globalLightPlacerSettings{
                 .lights = std::move(
                     settings.emittancePatching.lightPlacer),
@@ -1903,6 +1906,7 @@ namespace MPL::Heliosphan
         AutoCSTonemapping::ClearProfiles();
         LightPlacer::ClearProfiles();
         ExternalEmittance::ClearProfiles();
+        ModelPatcher::ClearProfiles();
         ObjectOverrides::Patches::ClearGroups();
         CellClassifier::Clear();
 
@@ -2094,6 +2098,7 @@ namespace MPL::Heliosphan
                 !globalEmittancePatching &&
                 !windowEmittancePatching &&
                 !settings.regionWeatherPatcher.enabled &&
+                settings.modelPatches.empty() &&
                 settings.autoCSTonemapping.plugins.empty())
             {
                 logger::warn(

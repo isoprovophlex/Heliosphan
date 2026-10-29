@@ -159,6 +159,16 @@ if(HELIOSPHAN_BUILD_TESTS)
   target_precompile_headers(ServiceMigrationTests PRIVATE include/PCH.h)
   add_test(NAME ServiceMigrationTests COMMAND ServiceMigrationTests)
 
+  add_executable(ModelPatchTests tests/ModelPatchTests.cpp src/ModelPatcher.cpp)
+  target_compile_features(ModelPatchTests PRIVATE cxx_std_23)
+  target_include_directories(ModelPatchTests PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/extern/MMSF/include
+  )
+  target_link_libraries(ModelPatchTests PRIVATE CommonLibSSE::CommonLibSSE reflectcpp::reflectcpp)
+  target_precompile_headers(ModelPatchTests PRIVATE include/PCH.h)
+  add_test(NAME ModelPatchTests COMMAND ModelPatchTests)
+
   if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../TuningUtil/src/CSTonemapping.cpp")
     add_executable(HeliosphanInteropTests tests/HeliosphanInteropTests.cpp)
     target_compile_features(HeliosphanInteropTests PRIVATE cxx_std_23)
