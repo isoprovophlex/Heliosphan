@@ -1,6 +1,7 @@
 #include <AutoCSTonemapping.h>
 #include <CellClassifier.h>
 #include <ExternalEmittance.h>
+#include <WeatherSoundFix.h>
 #include <FormResolver.h>
 #include <LumaClient.h>
 #include <LightPlacer.h>
@@ -237,6 +238,14 @@ namespace MPL::Heliosphan
             std::jthread worker;
         };
 
+        struct EclipseRecords
+        {
+            RE::TESWeather* weather = nullptr;
+            RE::TESGlobal* global = nullptr;
+            RE::SpellItem* spell = nullptr;
+            RE::EffectSetting* effect = nullptr;
+        };
+
         struct State
         {
             std::vector<PendingProfile> pendingProfiles;
@@ -266,6 +275,7 @@ namespace MPL::Heliosphan
             std::uint64_t generation = 0;
             MPL::API::MMSF::IEDIDCache* edidCache = nullptr;
             SpeedTiming speedTiming;
+            EclipseRecords eclipseRecords;
         };
 
         State& GetState()
@@ -340,6 +350,13 @@ namespace MPL::Heliosphan
         {
             static Scheduler scheduler;
             return scheduler;
+        }
+
+        void PollWeatherSounds()
+        {
+            if (!WeatherSoundFix::Enabled()) return;
+            WeatherSoundFix::Poll();
+            GetScheduler().Schedule(1s, PollWeatherSounds);
         }
 
         void ProcessEngineReadyWork(
@@ -847,6 +864,42 @@ namespace MPL::Heliosphan
             return editorID;
         }
 
+        class EclipseEffectVisitor final : public RE::MagicTarget::ForEachActiveEffectVisitor
+        {
+        public:
+            explicit EclipseEffectVisitor(const EclipseRecords& a_records) : records(a_records) {}
+
+            RE::BSContainer::ForEachResult Accept(RE::ActiveEffect* a_effect) override
+            {
+                if (!a_effect || !((records.spell && a_effect->spell == records.spell) ||
+                    (records.effect && a_effect->GetBaseObject() == records.effect)))
+                    return RE::BSContainer::ForEachResult::kContinue;
+                if (!a_effect->flags.any(RE::ActiveEffect::Flag::kInactive, RE::ActiveEffect::Flag::kDispelled))
+                {
+                    active = true;
+                    return RE::BSContainer::ForEachResult::kStop;
+                }
+                return RE::BSContainer::ForEachResult::kContinue;
+            }
+
+            bool active = false;
+
+        private:
+            const EclipseRecords& records;
+        };
+
+        bool HasActiveEclipse()
+        {
+            const auto& records = GetState().eclipseRecords;
+            if (!records.global || records.global->value <= 0.0f) return false;
+            auto* player = RE::PlayerCharacter::GetSingleton();
+            auto* magic = player ? player->GetMagicTarget() : nullptr;
+            if (!magic) return false;
+            EclipseEffectVisitor effects(records);
+            magic->VisitEffects(effects);
+            return effects.active;
+        }
+
         void ReleaseWeatherOverride(RE::TESWeather* a_expectedOverride)
         {
             auto& state = GetState();
@@ -1106,8 +1159,12 @@ namespace MPL::Heliosphan
                 nullptr);
             state.activeProfile = destinationProfile;
 
+            const bool isEclipseWeather = target == state.eclipseRecords.weather ||
+                EqualsIgnoreCase(BaseEditorID(target, ProfileForWeather(target)), "DLC1Eclipse");
+            const auto overridePolicy = HeliosphanLogic::SelectWeatherOverridePolicy(
+                entering, isEclipseWeather, isEclipseWeather && HasActiveEclipse());
             const auto result =
-                WeatherRuntime::SetWeatherInstant(target, entering);
+                WeatherRuntime::SetWeatherInstant(target, overridePolicy.hold);
             ImageSpaceDiagnostics::QueueSnapshot("weather-transition-return",
                 destinationCell ? destinationCell->GetFormID() : 0, IsDetailedLoggingEnabled);
             if (DetailedLogsEnabled())
@@ -1147,6 +1204,10 @@ namespace MPL::Heliosphan
                 if (usedConfiguredFallback)
                 {
                     ReleaseOwnedOverride();
+                }
+                else if (!overridePolicy.useProfileTimer)
+                {
+                    state.releaseAtGameDay.reset();
                 }
                 else if (const auto* calendar = RE::Calendar::GetSingleton();
                     calendar && state.profiles[profile].overrideDurationGameHours > 0.0f)
@@ -2487,6 +2548,15 @@ namespace MPL::Heliosphan
         InstallRuntimeEvents();
         auto& state = GetState();
         ActivatePendingProfiles(state);
+        if (auto* data = RE::TESDataHandler::GetSingleton())
+        {
+            state.eclipseRecords = {
+                data->LookupForm<RE::TESWeather>(0x006AEC, "Dawnguard.esm"),
+                data->LookupForm<RE::TESGlobal>(0x00A26E, "Dawnguard.esm"),
+                data->LookupForm<RE::SpellItem>(0x00F82F, "Dawnguard.esm"),
+                data->LookupForm<RE::EffectSetting>(0x018C5A, "Dawnguard.esm"),
+            };
+        }
         auto* registry = API::MMSF::RequestMMSFAPI();
         state.edidCache = nullptr;
         if (registry)
@@ -2605,6 +2675,7 @@ namespace MPL::Heliosphan
         LifecycleTiming::FinishStartupPhase(
             LifecycleTiming::StartupPhase::RegionPatching);
         ObjectOverrides::Patches::Initialize();
+        if (WeatherSoundFix::Initialize()) PollWeatherSounds();
     }
 
     void OnGameLoaded()

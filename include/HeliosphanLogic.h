@@ -71,6 +71,17 @@ namespace MPL::HeliosphanLogic
         std::uint64_t a_currentGeneration,
         bool a_hasPendingTransition);
 
+    struct WeatherOverridePolicy
+    {
+        bool hold;
+        bool useProfileTimer;
+    };
+
+    WeatherOverridePolicy SelectWeatherOverridePolicy(
+        bool a_entering,
+        bool a_isEclipseWeather,
+        bool a_eclipseActive);
+
     bool ShouldAcceptLoadedCellEvent(
         std::uint32_t a_eventCell,
         std::uint32_t a_playerCell,

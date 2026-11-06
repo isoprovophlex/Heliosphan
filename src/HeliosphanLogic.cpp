@@ -129,6 +129,15 @@ namespace MPL::HeliosphanLogic
                a_hasPendingTransition;
     }
 
+    WeatherOverridePolicy SelectWeatherOverridePolicy(
+        const bool a_entering,
+        const bool a_isEclipseWeather,
+        const bool a_eclipseActive)
+    {
+        const bool heldEclipse = a_isEclipseWeather && a_eclipseActive;
+        return { a_entering || heldEclipse, a_entering && !heldEclipse };
+    }
+
     bool ShouldAcceptLoadedCellEvent(
         const std::uint32_t a_eventCell,
         const std::uint32_t a_playerCell,

@@ -9,6 +9,7 @@
 #include <ObjectOverrides.h>
 #include <RoomMarkerPatcher.h>
 #include <WindowSync.h>
+#include <WeatherSoundFix.h>
 #include <string>
 
 namespace MPL::LumaClient
@@ -50,6 +51,7 @@ namespace MPL::LumaClient
         {
             const auto sequence = callbackCounters.CellChanging();
             TraceCellCallback("OnCellChanging", a_destination, sequence);
+            WeatherSoundFix::BeginWeatherChange(nullptr);
             Heliosphan::BeginCellTiming(a_destination);
             if (a_destination)
             {
@@ -73,6 +75,7 @@ namespace MPL::LumaClient
             WindowSync::FinishCellChange(a_destination);
             Heliosphan::FinishCellTiming(destination);
             TraceCellCallback("OnCellChanged-return", a_destination, sequence);
+            WeatherSoundFix::Poll();
             ImageSpaceDiagnostics::QueueSnapshot("cell-changed", a_destination ? a_destination->GetFormID() : 0,
                 Heliosphan::IsDetailedLoggingEnabled);
         }

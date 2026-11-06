@@ -3,6 +3,7 @@
 #include <ExternalEmittance.h>
 #include <Heliosphan.h>
 #include <HeliosphanServiceAPI.h>
+#include <WeatherSoundFix.h>
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
@@ -46,7 +47,9 @@ namespace MPL::WeatherRuntime
         const auto operationStart = std::chrono::steady_clock::now();
         const auto forceStart = std::chrono::steady_clock::now();
         detail::TraceStage("ForceWeather-begin", a_weather, a_override);
+        WeatherSoundFix::BeginWeatherChange(a_weather);
         sky->ForceWeather(a_weather, a_override);
+        WeatherSoundFix::Poll();
         detail::TraceStage("ForceWeather-end", a_weather, a_override);
         result.flags |= API::Heliosphan::ToMask(
             API::Heliosphan::SetWeatherFlag::kWeatherApplied);
