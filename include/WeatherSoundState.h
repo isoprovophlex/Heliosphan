@@ -6,7 +6,7 @@
 
 namespace MPL::WeatherSoundFix
 {
-    // Verified in the 1.6.1170 audio message dispatcher.
+    // Verified in SE, AE, VR and 1.7.99 audio message dispatchers.
     inline constexpr std::uint32_t kSoundFadeInProgress = 1u << 9;
 
     constexpr bool ShouldCorrectCopiedAttenuation(bool a_target, bool a_playing,

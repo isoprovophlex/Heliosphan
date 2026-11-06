@@ -585,6 +585,7 @@ namespace MPL::WindowSync
                     .indexStaticEditorIDs =
                         CellClassifier::RequiresStaticEditorIDs(),
                     .skipExteriorCells = !globalExternalEmittance,
+                    .detailedLogging = Heliosphan::IsDetailedLoggingEnabled(),
                     .preparePlacementFilter =
                         [](const PluginIndex::BuildOptions::EditorIDMap& a_editorIDs)
                         {
@@ -613,12 +614,15 @@ namespace MPL::WindowSync
                     indexOptions.excludedCells =
                         CellClassifier::GetExcludedCells();
                 }
-                logger::info(
-                    "[Window Sync] index plan | exterior={} | excludedCells={} | LightPlacer={} | externalEmittance={}",
-                    indexOptions.skipExteriorCells ? "skipped" : "retained",
-                    indexOptions.excludedCells.size(),
-                    globalLightPlacer,
-                    globalExternalEmittance);
+                if (indexOptions.detailedLogging)
+                {
+                    logger::info(
+                        "[Window Sync] index plan | exterior={} | excludedCells={} | LightPlacer={} | externalEmittance={}",
+                        indexOptions.skipExteriorCells ? "skipped" : "retained",
+                        indexOptions.excludedCells.size(),
+                        globalLightPlacer,
+                        globalExternalEmittance);
+                }
                 LifecycleTiming::BeginStartupPhase(
                     LifecycleTiming::StartupPhase::PluginIndex);
                 index = PluginIndex::Build(indexOptions);
@@ -628,8 +632,11 @@ namespace MPL::WindowSync
             else
             {
                 index.complete = true;
-                logger::info(
-                    "[Window Sync] index | status=skipped | reason=no-consumer");
+                if (Heliosphan::IsDetailedLoggingEnabled())
+                {
+                    logger::info(
+                        "[Window Sync] index | status=skipped | reason=no-consumer");
+                }
             }
             LifecycleTiming::BeginStartupPhase(
                 LifecycleTiming::StartupPhase::CellClassification);

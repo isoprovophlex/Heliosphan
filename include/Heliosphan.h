@@ -78,6 +78,7 @@ namespace MPL::Heliosphan
         RE::TESWeather* a_sourceWeather,
         bool a_usedDefaultRegion);
     void OnDataLoaded();
-    void OnGameLoaded();
+    void BeginGameLoad();
+    void OnGameLoaded(bool a_success = true);
     void Reset();
 }  // namespace MPL::Heliosphan

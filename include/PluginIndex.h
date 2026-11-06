@@ -28,6 +28,10 @@ namespace MPL::PluginIndex
         std::size_t exteriorCellGroupsSkipped = 0;
         std::size_t excludedCellGroupsSkipped = 0;
         std::uint64_t cellGroupBytesSkipped = 0;
+        std::size_t topLevelGroupsSkipped = 0;
+        std::uint64_t topLevelGroupBytesSkipped = 0;
+        std::size_t embeddedPlugins = 0;
+        std::size_t embeddedPlacements = 0;
         std::vector<std::string> failedPlugins;
         bool complete = false;
     };
@@ -42,6 +46,7 @@ namespace MPL::PluginIndex
         bool indexReferences = true;
         bool indexStaticEditorIDs = false;
         bool skipExteriorCells = false;
+        bool detailedLogging = false;
         std::unordered_set<RE::FormID> excludedCells;
         std::function<void(const EditorIDMap&)> preparePlacementFilter;
         PlacementFilter retainPlacement;

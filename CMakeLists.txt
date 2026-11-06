@@ -76,6 +76,7 @@ target_link_libraries(
     nlohmann_json::nlohmann_json
     reflectcpp::reflectcpp
     ZLIB::ZLIB
+    bcrypt
 )
 
 target_precompile_headers(${PROJECT_NAME} PRIVATE include/PCH.h)
@@ -103,6 +104,40 @@ if(MSVC)
 endif()
 
 option(HELIOSPHAN_BUILD_TESTS "Build Heliosphan development tests" OFF)
+option(HELIOSPHAN_PARSER_DIAGNOSTICS "Build temporary parser profiling instrumentation" OFF)
+option(HELIOSPHAN_EMBEDDED_VANILLA_INDEX "Use recognized embedded vanilla placement indexes" ON)
+option(HELIOSPHAN_BUILD_INDEX_GENERATOR "Build the developer-only vanilla index generator" OFF)
+
+if(HELIOSPHAN_EMBEDDED_VANILLA_INDEX AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/assets/VanillaIndex/Manifest.inc" AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/assets/VanillaIndex/Resources.rc.in")
+  enable_language(RC)
+  configure_file(assets/VanillaIndex/Resources.rc.in ${CMAKE_CURRENT_BINARY_DIR}/VanillaIndex.rc @ONLY)
+  set(HELIOSPHAN_VANILLA_RESOURCES ${CMAKE_CURRENT_BINARY_DIR}/VanillaIndex.rc)
+  target_sources(${PROJECT_NAME} PRIVATE ${HELIOSPHAN_VANILLA_RESOURCES})
+  target_compile_definitions(${PROJECT_NAME} PRIVATE HELIOSPHAN_HAS_VANILLA_INDEX_DATA=1)
+endif()
+
+if(HELIOSPHAN_BUILD_INDEX_GENERATOR)
+  add_executable(GenerateVanillaIndex tools/GenerateVanillaIndex.cpp src/PluginIndex.cpp
+    src/PluginRecords.cpp src/VanillaIndex.cpp src/VanillaIndexCodec.cpp)
+  target_compile_features(GenerateVanillaIndex PRIVATE cxx_std_23)
+  target_include_directories(GenerateVanillaIndex PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  target_link_libraries(GenerateVanillaIndex PRIVATE CommonLibSSE::CommonLibSSE nlohmann_json::nlohmann_json ZLIB::ZLIB bcrypt)
+  target_compile_definitions(GenerateVanillaIndex PRIVATE ENABLE_COMMONLIBSSE_TESTING=1)
+  target_precompile_headers(GenerateVanillaIndex PRIVATE include/PCH.h)
+  if(HELIOSPHAN_VANILLA_RESOURCES)
+    target_sources(GenerateVanillaIndex PRIVATE ${HELIOSPHAN_VANILLA_RESOURCES})
+    target_compile_definitions(GenerateVanillaIndex PRIVATE HELIOSPHAN_HAS_VANILLA_INDEX_DATA=1)
+  endif()
+  if(MSVC)
+    target_compile_options(GenerateVanillaIndex PRIVATE /utf-8 /permissive- /Zc:preprocessor)
+  endif()
+endif()
+
+if(HELIOSPHAN_PARSER_DIAGNOSTICS)
+  target_compile_definitions(${PROJECT_NAME} PRIVATE HELIOSPHAN_PARSER_DIAGNOSTICS=1)
+endif()
 
 if(HELIOSPHAN_BUILD_TESTS)
   enable_testing()
@@ -111,9 +146,12 @@ if(HELIOSPHAN_BUILD_TESTS)
     HeliosphanTests
     tests/HeliosphanTests.cpp
     tests/PluginIndexTests.cpp
+    tests/VanillaIndexTests.cpp
     src/HeliosphanLogic.cpp
     src/PluginIndex.cpp
     src/PluginRecords.cpp
+    src/VanillaIndex.cpp
+    src/VanillaIndexCodec.cpp
   )
   target_compile_features(HeliosphanTests PRIVATE cxx_std_23)
   target_include_directories(
@@ -127,6 +165,7 @@ if(HELIOSPHAN_BUILD_TESTS)
       CommonLibSSE::CommonLibSSE
       nlohmann_json::nlohmann_json
       ZLIB::ZLIB
+      bcrypt
   )
   target_compile_definitions(
     HeliosphanTests
@@ -135,6 +174,16 @@ if(HELIOSPHAN_BUILD_TESTS)
       HELIOSPHAN_TEST_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures"
   )
   target_precompile_headers(HeliosphanTests PRIVATE include/PCH.h)
+
+  if(HELIOSPHAN_VANILLA_RESOURCES)
+    target_sources(HeliosphanTests PRIVATE ${HELIOSPHAN_VANILLA_RESOURCES})
+    target_compile_definitions(HeliosphanTests PRIVATE HELIOSPHAN_HAS_VANILLA_INDEX_DATA=1)
+  endif()
+
+  if(HELIOSPHAN_PARSER_DIAGNOSTICS)
+    target_sources(HeliosphanTests PRIVATE src/ParserDiagnostics.cpp)
+    target_compile_definitions(HeliosphanTests PRIVATE HELIOSPHAN_PARSER_DIAGNOSTICS=1)
+  endif()
 
   if(MSVC)
     target_compile_options(

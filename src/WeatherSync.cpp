@@ -6,6 +6,7 @@
 #include <LumaClient.h>
 #include <LightPlacer.h>
 #include <LifecycleTiming.h>
+#include <ManifestSettings.h>
 #include <MMSF_API.h>
 #include <MMSFServices.h>
 #include <ModelPatcher.h>
@@ -13,25 +14,23 @@
 #include <RegionRuntime.h>
 #include <RegionWeatherPatcher.h>
 #include <WeatherRuntime.h>
+#include <WeatherLoadState.h>
 #include <ImageSpaceDiagnostics.h>
 #include <Heliosphan.h>
 #include <HeliosphanLogic.h>
 #include <InlineTaskQueue.h>
 #include <WindowSync.h>
-#include <yyjson.h>
 #include <algorithm>
 #include <atomic>
 #include <cctype>
 #include <chrono>
 #include <condition_variable>
-#include <cstdlib>
 #include <filesystem>
 #include <format>
 #include <fstream>
 #include <functional>
 #include <limits>
 #include <map>
-#include <memory>
 #include <mutex>
 #include <optional>
 #include <ranges>
@@ -44,15 +43,13 @@
 
 namespace MPL::Heliosphan
 {
+    void ProcessCellChanged(const RE::TESObjectCELL*, RE::TESWeather*, bool);
+
     namespace
     {
         using namespace std::chrono_literals;
 
         constexpr auto kConfigurationRoot = "Data/Luma/Heliosphan";
-        constexpr std::string_view kPrimaryProfile = "Helios";
-        const std::filesystem::path kOwnedSettingsPath{
-            "Data/SKSE/Plugins/HeliosphanSettings.json"
-        };
         constexpr auto kReadinessPollInterval = 16ms;
         constexpr std::uint32_t kMaxReadinessPollAttempts = 1000;
         constexpr auto kSkyUpdateWatchdogDelay = 2s;
@@ -115,6 +112,7 @@ namespace MPL::Heliosphan
             RegionWeatherPatcher::Settings regionWeatherPatcher;
             std::vector<ModelPatcher::Rule> modelPatches;
             std::vector<ObjectOverrides::Patches::Group> objects;
+            rfl::Skip<std::filesystem::path> manifestPath;
             rfl::Skip<std::map<std::string, std::string>>
                 compiledGlobalOverrides;
             rfl::Skip<std::map<std::string, std::string>>
@@ -132,33 +130,6 @@ namespace MPL::Heliosphan
             RE::FormID cell = 0;
             std::uint64_t generation = 0;
             bool active = false;
-        };
-
-        struct JsonDocumentDeleter
-        {
-            void operator()(yyjson_doc* a_document) const
-            {
-                yyjson_doc_free(a_document);
-            }
-        };
-
-        struct MutableJsonDocumentDeleter
-        {
-            void operator()(yyjson_mut_doc* a_document) const
-            {
-                yyjson_mut_doc_free(a_document);
-            }
-        };
-
-        using JsonDocument =
-            std::unique_ptr<yyjson_doc, JsonDocumentDeleter>;
-        using MutableJsonDocument =
-            std::unique_ptr<yyjson_mut_doc, MutableJsonDocumentDeleter>;
-
-        struct OwnedSettings
-        {
-            std::optional<bool> speedLogs;
-            std::optional<bool> notifications;
         };
 
         InlineTaskQueue& GetRuntimeTaskQueue()
@@ -267,7 +238,9 @@ namespace MPL::Heliosphan
             bool pendingOverrideReleaseNotification = false;
             bool pendingDefaultRegionNotification = false;
             bool pendingDefaultWeatherNotification = false;
+            bool pendingLoadFallbackRecheck = false;
             bool gameLoadPending = false;
+            WeatherLoadState loadWeather;
             std::uint32_t readinessPollAttempts = 0;
             std::chrono::steady_clock::time_point readinessStarted;
             std::optional<std::chrono::steady_clock::time_point> watchdogDeadline;
@@ -442,6 +415,7 @@ namespace MPL::Heliosphan
             a_state.pendingOverrideReleaseNotification = false;
             a_state.pendingDefaultRegionNotification = false;
             a_state.pendingDefaultWeatherNotification = false;
+            a_state.pendingLoadFallbackRecheck = false;
         }
 
         std::string ReadText(const std::filesystem::path& a_path)
@@ -451,102 +425,6 @@ namespace MPL::Heliosphan
             constexpr std::string_view bom = "\xEF\xBB\xBF";
             if (text.starts_with(bom)) text.erase(0, bom.size());
             return text;
-        }
-
-        OwnedSettings ReadOwnedSettings()
-        {
-            OwnedSettings settings;
-            const auto text = ReadText(kOwnedSettingsPath);
-            JsonDocument document(yyjson_read(
-                text.data(),
-                text.size(),
-                YYJSON_READ_NOFLAG));
-            auto* root =
-                document ? yyjson_doc_get_root(document.get()) : nullptr;
-            if (!yyjson_is_obj(root))
-            {
-                return settings;
-            }
-
-            const auto readBoolean =
-                [root](const char* a_key) -> std::optional<bool>
-                {
-                    auto* value = yyjson_obj_get(root, a_key);
-                    return yyjson_is_bool(value) ?
-                               std::optional(yyjson_get_bool(value)) :
-                               std::nullopt;
-                };
-            settings.speedLogs = readBoolean("speedLogs");
-            settings.notifications = readBoolean("notifications");
-            return settings;
-        }
-
-        bool WriteOwnedBoolean(const char* a_key, const bool a_enabled)
-        {
-            const auto text = ReadText(kOwnedSettingsPath);
-            JsonDocument source(yyjson_read(
-                text.data(),
-                text.size(),
-                YYJSON_READ_NOFLAG));
-            auto* sourceRoot =
-                source ? yyjson_doc_get_root(source.get()) : nullptr;
-            MutableJsonDocument document(yyjson_mut_doc_new(nullptr));
-            auto* root =
-                document && yyjson_is_obj(sourceRoot) ?
-                    yyjson_val_mut_copy(document.get(), sourceRoot) :
-                    nullptr;
-            if (!root)
-            {
-                return false;
-            }
-            yyjson_mut_doc_set_root(document.get(), root);
-
-            auto* key = yyjson_mut_strcpy(document.get(), a_key);
-            auto* value = yyjson_mut_bool(document.get(), a_enabled);
-            if (!key || !value ||
-                (!yyjson_mut_obj_replace(root, key, value) &&
-                    !yyjson_mut_obj_add(root, key, value)))
-            {
-                return false;
-            }
-
-            std::size_t length = 0;
-            auto* output = yyjson_mut_write(
-                document.get(),
-                YYJSON_WRITE_PRETTY,
-                &length);
-            if (!output)
-            {
-                return false;
-            }
-            const std::unique_ptr<char, decltype(&std::free)>
-                outputOwner(output, &std::free);
-            auto temporaryPath = kOwnedSettingsPath;
-            temporaryPath += L".tmp";
-            {
-                std::ofstream file(
-                    temporaryPath,
-                    std::ios::binary | std::ios::trunc);
-                file.write(output, static_cast<std::streamsize>(length));
-                file << '\n';
-                if (!file)
-                {
-                    file.close();
-                    std::error_code error;
-                    std::filesystem::remove(temporaryPath, error);
-                    return false;
-                }
-            }
-            if (::MoveFileExW(
-                    temporaryPath.c_str(),
-                    kOwnedSettingsPath.c_str(),
-                    MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
-            {
-                return true;
-            }
-            std::error_code error;
-            std::filesystem::remove(temporaryPath, error);
-            return false;
         }
 
         bool EqualsIgnoreCase(std::string_view a_left, std::string_view a_right)
@@ -931,16 +809,19 @@ namespace MPL::Heliosphan
         {
             ReleaseOwnedOverride();
             auto& state = GetState();
+            const bool deferredLoadTiming = state.loadWeather.DeferCellTiming();
             state.activeProfile.reset();
+            state.loadWeather.ResetPending();
             ClearPendingTransition(state);
-            FinishSpeedTiming(a_generation);
+            FinishSpeedTiming(deferredLoadTiming ? 0 : a_generation);
             LifecycleTiming::FinishGameLoad();
         }
 
         void CheckExpiration(std::uint64_t a_generation)
         {
             auto& state = GetState();
-            if (a_generation != state.generation || !state.activeProfile || !state.ownedOverride ||
+            if (state.loadWeather.awaitingPostLoad.load(std::memory_order_acquire) ||
+                a_generation != state.generation || !state.activeProfile || !state.ownedOverride ||
                 !state.releaseAtGameDay)
             {
                 return;
@@ -971,6 +852,7 @@ namespace MPL::Heliosphan
         void ApplyTransition(std::uint64_t a_generation)
         {
             auto& state = GetState();
+            if (state.loadWeather.awaitingPostLoad.load(std::memory_order_acquire)) return;
             if (!HeliosphanLogic::ShouldApplyTransition(
                     a_generation,
                     state.generation,
@@ -979,6 +861,26 @@ namespace MPL::Heliosphan
                 FinishSpeedTiming(a_generation);
                 LifecycleTiming::FinishGameLoad();
                 return;
+            }
+            if (std::exchange(state.pendingLoadFallbackRecheck, false))
+            {
+                auto* weather = CaptureSourceWeather();
+                LogDetailed("load-weather | phase=before-fallback | source={} | action={}",
+                    DescribeWeather(weather), weather ? "recovered" : "fallback");
+                if (weather)
+                {
+                    auto* cell = state.pendingCell;
+                    const bool usedDefaultRegion = state.pendingDefaultRegionNotification;
+                    AdvanceGeneration(state);
+                    ClearPendingTransition(state);
+                    ProcessCellChanged(cell, weather, usedDefaultRegion);
+                    if (!state.pendingSource)
+                    {
+                        FinishSpeedTiming(0);
+                        LifecycleTiming::FinishGameLoad();
+                    }
+                    return;
+                }
             }
             const bool showOverrideReleased = std::exchange(
                 state.pendingOverrideReleaseNotification,
@@ -1348,13 +1250,16 @@ namespace MPL::Heliosphan
             const bool a_requireRegion)
         {
             auto& state = GetState();
-            if (a_generation != state.generation)
+            if (a_generation != state.generation ||
+                state.loadWeather.awaitingPostLoad.load(std::memory_order_acquire))
             {
                 return;
             }
 
             if (state.gameLoadPending)
             {
+                const bool savedLoad = state.loadWeather.source.has_value();
+                if (savedLoad && state.loadWeather.dispatchReady) return;
                 auto* player = RE::PlayerCharacter::GetSingleton();
                 auto* cell = player ? player->GetParentCell() : nullptr;
                 const auto issue =
@@ -1371,16 +1276,21 @@ namespace MPL::Heliosphan
                     cell,
                     a_requireRegion,
                     "game-load");
-                state.gameLoadPending = false;
-                ObjectOverrides::Patches::CompleteGameLoad(cell);
-                ExternalEmittance::ReplayCell(cell);
-                auto* sourceWeather = CaptureSourceWeather();
+                if (!savedLoad)
+                {
+                    state.gameLoadPending = false;
+                    ObjectOverrides::Patches::CompleteGameLoad(cell);
+                    ExternalEmittance::ReplayCell(cell);
+                }
+                auto* sourceWeather = savedLoad ? *state.loadWeather.source : CaptureSourceWeather();
+                state.loadWeather.dispatchReady = savedLoad;
                 auto* sourceRegion = WindowSync::CaptureSourceRegion();
                 WindowSync::PrepareCellChange(
                     cell,
                     sourceWeather,
                     sourceRegion);
                 WindowSync::FinishCellChange(cell);
+                if (savedLoad) return;
             }
 
             if (!state.pendingSource)
@@ -1649,21 +1559,33 @@ namespace MPL::Heliosphan
 
     void FinishCellTiming(RE::TESObjectCELL* a_cell)
     {
-        std::scoped_lock lock(speedTimingLock);
-        auto& timing = GetState().speedTiming;
-        if (!timing.active || !a_cell ||
-            timing.cell != a_cell->GetFormID() || timing.generation != 0)
+        if (!a_cell) return;
+        const auto cellID = a_cell->GetFormID();
+        std::chrono::steady_clock::time_point started;
         {
-            return;
+            std::scoped_lock lock(speedTimingLock);
+            const auto& timing = GetState().speedTiming;
+            if (!timing.active || timing.cell != cellID || timing.generation != 0) return;
+            started = timing.cellStarted;
         }
-        if (IsSpeedLoggingEnabled())
-        {
-            logger::info(
-                "[Cell Timing] cell={:08X} | component=Heliosphan | stage=finish | last=cell change | total={:.3f}ms",
-                timing.cell,
-                ElapsedMilliseconds(timing.cellStarted));
-        }
-        timing = {};
+        GetRuntimeTaskQueue().Submit(
+            [cellID, started]
+            {
+                std::scoped_lock lock(speedTimingLock);
+                auto& state = GetState();
+                auto& timing = state.speedTiming;
+                if (!timing.active || timing.cell != cellID || timing.cellStarted != started ||
+                    timing.generation != 0 || state.loadWeather.DeferCellTiming())
+                    return;
+                if (IsSpeedLoggingEnabled())
+                {
+                    logger::info(
+                        "[Cell Timing] cell={:08X} | component=Heliosphan | stage=finish | last=cell change | total={:.3f}ms",
+                        timing.cell,
+                        ElapsedMilliseconds(timing.cellStarted));
+                }
+                timing = {};
+            });
     }
 
     bool GetProfileDetailedLogging(const std::string_view a_profile)
@@ -1713,10 +1635,10 @@ namespace MPL::Heliosphan
             {
                 return EqualsIgnoreCase(a_settings.id, a_profile);
             });
-        if (found == profiles.end())
+        if (found == profiles.end() || found->manifestPath.get().empty())
         {
             logger::error(
-                "[Heliosphan] detailedLogging rejected | profile={} unknown",
+                "[Heliosphan] detailedLogging rejected | profile={} | manifest=unavailable",
                 a_profile);
             return false;
         }
@@ -1745,15 +1667,14 @@ namespace MPL::Heliosphan
             {
                 return EqualsIgnoreCase(a_settings.id, a_profile);
             });
-        if (found == profiles.end() ||
-            !EqualsIgnoreCase(found->id, kPrimaryProfile))
+        if (found == profiles.end() || found->manifestPath.get().empty())
         {
             logger::error(
-                "[Heliosphan] speedLogging rejected | profile={} unknown",
+                "[Heliosphan] speedLogging rejected | profile={} | manifest=unavailable",
                 a_profile);
             return false;
         }
-        if (!WriteOwnedBoolean("speedLogs", a_enabled))
+        if (!ManifestSettings::WriteBoolean(found->manifestPath.get(), found->id, "speedLogs", a_enabled))
         {
             return false;
         }
@@ -1776,15 +1697,14 @@ namespace MPL::Heliosphan
             {
                 return EqualsIgnoreCase(a_settings.id, a_profile);
             });
-        if (found == profiles.end() ||
-            !EqualsIgnoreCase(found->id, kPrimaryProfile))
+        if (found == profiles.end() || found->manifestPath.get().empty())
         {
             logger::error(
-                "[Heliosphan] notifications rejected | profile={} unknown",
+                "[Heliosphan] notifications rejected | profile={} | manifest=unavailable",
                 a_profile);
             return false;
         }
-        if (!WriteOwnedBoolean("notifications", a_enabled))
+        if (!ManifestSettings::WriteBoolean(found->manifestPath.get(), found->id, "notifications", a_enabled))
         {
             return false;
         }
@@ -1996,7 +1916,7 @@ namespace MPL::Heliosphan
             }
         }
         std::ranges::sort(files);
-        const auto ownedSettings = ReadOwnedSettings();
+        const auto manifests = ManifestSettings::Load("Data/SKSE/Plugins");
         for (const auto& file : files)
         {
             const auto parsed = rfl::json::read<Settings, rfl::DefaultIfMissing>(ReadText(file));
@@ -2022,22 +1942,16 @@ namespace MPL::Heliosphan
                     settings.id);
                 continue;
             }
-            bool detailedLogging = false;
-            if (LumaClient::GetProviderDetailedLogging(
-                    settings.id,
-                    detailedLogging))
+            settings.detailedLogging = false;
+            settings.speedLogs = false;
+            if (const auto* manifest = ManifestSettings::Find(manifests, settings.id))
             {
-                settings.detailedLogging = detailedLogging;
-            }
-            if (EqualsIgnoreCase(settings.id, kPrimaryProfile))
-            {
-                if (ownedSettings.speedLogs)
+                settings.manifestPath.get() = manifest->source;
+                LumaClient::GetProviderDetailedLogging(settings.id, settings.detailedLogging);
+                settings.speedLogs = manifest->speedLogs.value_or(false);
+                if (manifest->notifications)
                 {
-                    settings.speedLogs = *ownedSettings.speedLogs;
-                }
-                if (ownedSettings.notifications)
-                {
-                    settings.notifications = *ownedSettings.notifications;
+                    settings.notifications = *manifest->notifications;
                 }
             }
             if (!HeliosphanLogic::IsWeatherSyncConfigurationValid(
@@ -2406,6 +2320,7 @@ namespace MPL::Heliosphan
 
     RE::TESWeather* CaptureSourceWeather()
     {
+        if (GetState().loadWeather.awaitingPostLoad.load(std::memory_order_acquire)) return nullptr;
         auto* sky = RE::Sky::GetSingleton();
         if (!sky)
         {
@@ -2425,8 +2340,27 @@ namespace MPL::Heliosphan
         const bool a_usedDefaultRegion)
     {
         auto& state = GetState();
-        const bool wasGameLoadPending = state.gameLoadPending;
-        state.gameLoadPending = false;
+        if (state.loadWeather.DeferCellChange())
+        {
+            LogDetailed("load-weather | phase=cell-event | action=deferred");
+            return;
+        }
+        if (state.loadWeather.source)
+        {
+            auto* player = RE::PlayerCharacter::GetSingleton();
+            if (!player || player->GetParentCell() != a_cell) return;
+        }
+        const auto loadedWeather = state.loadWeather.Consume();
+        if (loadedWeather) a_sourceWeather = *loadedWeather;
+        const bool wasGameLoadPending = std::exchange(state.gameLoadPending, false);
+        const auto finishLoadedCell = [wasGameLoadPending]
+        {
+            if (wasGameLoadPending)
+            {
+                FinishSpeedTiming(0);
+                LifecycleTiming::FinishGameLoad();
+            }
+        };
         if (wasGameLoadPending)
         {
             ObjectOverrides::Patches::CompleteGameLoad(
@@ -2436,6 +2370,7 @@ namespace MPL::Heliosphan
         }
         if (state.profiles.empty() || !state.edidCache)
         {
+            finishLoadedCell();
             return;
         }
 
@@ -2480,6 +2415,7 @@ namespace MPL::Heliosphan
         const bool hadPendingTransition = state.pendingSource != nullptr;
         if (!destination && !sourceProfile && !hadPendingTransition)
         {
+            finishLoadedCell();
             return;
         }
         if (!a_sourceWeather)
@@ -2514,18 +2450,22 @@ namespace MPL::Heliosphan
                     DescribeProfile(destination),
                     DescribeWeather(a_sourceWeather));
             }
+            finishLoadedCell();
             return;
         }
         if (!destination && !state.ownedOverride && sourceProfile)
         {
             ReleaseWeatherOverride(a_sourceWeather);
         }
+        const bool recheckFallback = ShouldRecheckLoadFallback(loadedWeather.has_value(), usedDefaultWeather,
+            state.pendingLoadFallbackRecheck, state.pendingCell == a_cell);
         ScheduleTransition(
             destination,
             const_cast<RE::TESObjectCELL*>(a_cell),
             a_sourceWeather,
             a_usedDefaultRegion,
             usedDefaultWeather);
+        state.pendingLoadFallbackRecheck = recheckFallback;
     }
 
     void OnCellChanged(
@@ -2678,12 +2618,37 @@ namespace MPL::Heliosphan
         if (WeatherSoundFix::Initialize()) PollWeatherSounds();
     }
 
-    void OnGameLoaded()
+    void BeginGameLoad()
+    {
+        GetState().loadWeather.awaitingPostLoad.store(true, std::memory_order_release);
+        Reset();
+    }
+
+    void OnGameLoaded(const bool a_success)
     {
         GetRuntimeTaskQueue().Submit(
-            []
+            [a_success]
             {
                 auto& state = GetState();
+                const bool savedLoad = state.loadWeather.awaitingPostLoad.exchange(false, std::memory_order_acq_rel);
+                AdvanceGeneration(state);
+                ClearPendingTransition(state);
+                state.loadWeather.ResetPending();
+                if (!a_success)
+                {
+                    LogDetailed("load-weather | phase=PostLoadGame | success=false");
+                    ObjectOverrides::Patches::CompleteGameLoad(nullptr);
+                    ExternalEmittance::ReplayCell(nullptr);
+                    Reset();
+                    LifecycleTiming::FinishGameLoad();
+                    return;
+                }
+                if (savedLoad)
+                {
+                    state.loadWeather.source = CaptureSourceWeather();
+                    LogDetailed("load-weather | phase=PostLoadGame | source={} | missing={}",
+                        DescribeWeather(*state.loadWeather.source), *state.loadWeather.source == nullptr);
+                }
                 state.gameLoadPending = true;
                 state.readinessPollAttempts = 0;
                 state.readinessStarted =
@@ -2708,6 +2673,7 @@ namespace MPL::Heliosphan
                 state.ownedOverride = nullptr;
                 state.releaseAtGameDay.reset();
                 state.gameLoadPending = false;
+                state.loadWeather.ResetPending();
                 state.readinessPollAttempts = 0;
                 state.readinessStarted = {};
                 state.watchdogDeadline.reset();

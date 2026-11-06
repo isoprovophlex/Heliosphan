@@ -145,7 +145,7 @@ namespace MPL::WeatherSoundFix
             a_table.write_vfunc(a_slot, Hook::thunk);
         }
 
-        // Layout verified against the 1.6.1170 Sky weather-sound constructor.
+        // Layout verified against SE, AE, VR and 1.7.99 weather-sound constructors.
         struct WeatherSoundEntry
         {
             RE::BSSoundHandle handle;
@@ -173,11 +173,6 @@ namespace MPL::WeatherSoundFix
     {
         auto& state = GetState();
         if (Enabled()) return false;
-        if (REL::Module::get().version() != REL::Version{ 1, 6, 1170, 0 })
-        {
-            logger::warn("[Weather Sound] correction unavailable | verified runtime=1.6.1170");
-            return false;
-        }
         auto* data = RE::TESDataHandler::GetSingleton();
         if (!data) return false;
         try
@@ -202,7 +197,8 @@ namespace MPL::WeatherSoundFix
             Install<UpdateHook>(soundTable, 0x0E);
             Install<PlayHook>(soundTable, 0x15);
             state.enabled.store(true, std::memory_order_release);
-            logger::info("[Weather Sound] inherited attenuation correction enabled");
+            logger::info("[Weather Sound] inherited attenuation correction enabled | game={}",
+                REL::Module::get().version().string());
             return true;
         }
         catch (const std::exception& error)

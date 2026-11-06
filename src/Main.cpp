@@ -145,15 +145,26 @@ namespace
             }
         case SKSE::MessagingInterface::kPreLoadGame:
             {
+                MPL::Heliosphan::BeginGameLoad();
                 MPL::LifecycleTiming::BeginGameLoad();
                 MPL::ModelPatcher::Reset();
                 MPL::ObjectOverrides::Patches::BeginGameLoad();
                 MPL::ExternalEmittance::BeginGameLoad();
                 MPL::WindowSync::Reset();
-                MPL::Heliosphan::Reset();
                 break;
             }
         case SKSE::MessagingInterface::kPostLoadGame:
+            if (lumaReady)
+            {
+                const bool success = a_message->data != nullptr;
+                if (success)
+                {
+                    MPL::ObjectOverrides::Patches::BeginGameLoad();
+                    MPL::ExternalEmittance::BeginGameLoad();
+                }
+                MPL::Heliosphan::OnGameLoaded(success);
+            }
+            break;
         case SKSE::MessagingInterface::kNewGame:
             if (lumaReady)
             {

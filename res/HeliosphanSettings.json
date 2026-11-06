@@ -1,6 +1,6 @@
 {
     "id":  "Helios",
-    "LumaManifest":  true,
+    "MMSFManifest":  true,
     "detailedLogging":  true,
     "speedLogs":  true,
     "notifications":  true,
